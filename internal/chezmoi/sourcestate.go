@@ -989,6 +989,7 @@ TARGET:
 
 // ReadOptions are options to SourceState.Read.
 type ReadOptions struct {
+	PersistentState  PersistentState
 	ReadHTTPResponse func(string, *http.Response) ([]byte, error)
 	RefreshExternals RefreshExternals
 	TimeNow          func() time.Time
@@ -1284,9 +1285,27 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 	for _, externalRelPath := range gitRepoExternalRelPaths {
 		for _, external := range s.externals[externalRelPath] {
 			destAbsPath := s.destDirAbsPath.Join(externalRelPath)
+			newComponents := external.FingerprintComponents()
+			var oldComponents FingerprintComponents
+			var configChange ExternalConfigChange
+			if options != nil && options.PersistentState != nil {
+				modifyDirWithCmdStateKey := []byte(destAbsPath.String())
+				var state ModifyDirWithCmdState
+				ok, err := PersistentStateGet(options.PersistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &state)
+				if err == nil && ok {
+					oldComponents = state.FingerprintComponents
+					configChange = newComponents.ClassifyChange(oldComponents)
+				} else if err == nil && !ok {
+					switch _, statErr := s.system.Lstat(destAbsPath); {
+					case errors.Is(statErr, fs.ErrNotExist):
+						configChange = ExternalConfigChangeNone
+					default:
+						configChange = ExternalConfigChangeNeedsReclone
+					}
+				}
+			}
 			switch _, err := s.system.Lstat(destAbsPath); {
 			case errors.Is(err, fs.ErrNotExist):
-				// FIXME add support for using builtin git
 				sourceStateCommand := &SourceStateCommand{
 					cmdFunc: sync.OnceValue(func() *exec.Cmd {
 						args := []string{"clone"}
@@ -1298,10 +1317,13 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 						cmd.Stderr = os.Stderr
 						return cmd
 					}),
-					origin:        external,
-					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
-					fingerprint:   external.Fingerprint(),
-					refreshPeriod: external.RefreshPeriod,
+					origin:                external,
+					forceRefresh:          options.RefreshExternals == RefreshExternalsAlways,
+					fingerprint:           newComponents.Overall(),
+					fingerprintComponents: newComponents,
+					configChange:          configChange,
+					reclone:               false,
+					refreshPeriod:         external.RefreshPeriod,
 					sourceAttr: SourceAttr{
 						External: true,
 					},
@@ -1310,27 +1332,55 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 			case err != nil:
 				return err
 			default:
-				// FIXME add support for using builtin git
-				sourceStateCommand := &SourceStateCommand{
-					cmdFunc: sync.OnceValue(func() *exec.Cmd {
-						args := []string{"pull"}
-						args = append(args, external.Pull.Args...)
-						cmd := exec.Command("git", args...)
-						cmd.Dir = destAbsPath.String()
-						cmd.Stdin = os.Stdin
-						cmd.Stdout = os.Stdout
-						cmd.Stderr = os.Stderr
-						return cmd
-					}),
-					origin:        external,
-					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
-					fingerprint:   external.Fingerprint(),
-					refreshPeriod: external.RefreshPeriod,
-					sourceAttr: SourceAttr{
-						External: true,
-					},
+				if configChange.RequiresReclone() {
+					sourceStateCommand := &SourceStateCommand{
+						cmdFunc: sync.OnceValue(func() *exec.Cmd {
+							args := []string{"clone"}
+							args = append(args, external.Clone.Args...)
+							args = append(args, external.URL, destAbsPath.String())
+							cmd := exec.Command("git", args...)
+							cmd.Stdin = os.Stdin
+							cmd.Stdout = os.Stdout
+							cmd.Stderr = os.Stderr
+							return cmd
+						}),
+						origin:                external,
+						forceRefresh:          options.RefreshExternals == RefreshExternalsAlways,
+						fingerprint:           newComponents.Overall(),
+						fingerprintComponents: newComponents,
+						configChange:          configChange,
+						reclone:               true,
+						refreshPeriod:         external.RefreshPeriod,
+						sourceAttr: SourceAttr{
+							External: true,
+						},
+					}
+					allSourceStateEntries[externalRelPath] = append(allSourceStateEntries[externalRelPath], sourceStateCommand)
+				} else {
+					sourceStateCommand := &SourceStateCommand{
+						cmdFunc: sync.OnceValue(func() *exec.Cmd {
+							args := []string{"pull"}
+							args = append(args, external.Pull.Args...)
+							cmd := exec.Command("git", args...)
+							cmd.Dir = destAbsPath.String()
+							cmd.Stdin = os.Stdin
+							cmd.Stdout = os.Stdout
+							cmd.Stderr = os.Stderr
+							return cmd
+						}),
+						origin:                external,
+						forceRefresh:          options.RefreshExternals == RefreshExternalsAlways,
+						fingerprint:           newComponents.Overall(),
+						fingerprintComponents: newComponents,
+						configChange:          configChange,
+						reclone:               false,
+						refreshPeriod:         external.RefreshPeriod,
+						sourceAttr: SourceAttr{
+							External: true,
+						},
+					}
+					allSourceStateEntries[externalRelPath] = append(allSourceStateEntries[externalRelPath], sourceStateCommand)
 				}
-				allSourceStateEntries[externalRelPath] = append(allSourceStateEntries[externalRelPath], sourceStateCommand)
 			}
 		}
 	}
@@ -3039,28 +3089,115 @@ func (s *SourceState) sourceStateEntry(
 	}
 }
 
+// A FingerprintComponents holds the per-component fingerprints of a git-repo
+// external's configuration, allowing detection of which fields changed.
+type FingerprintComponents struct {
+	URL           HexBytes `json:"url"           yaml:"url"`
+	CloneArgs     HexBytes `json:"cloneArgs"     yaml:"cloneArgs"`
+	PullArgs      HexBytes `json:"pullArgs"      yaml:"pullArgs"`
+	TargetPath    HexBytes `json:"targetPath"    yaml:"targetPath"`
+	RefreshPeriod HexBytes `json:"refreshPeriod" yaml:"refreshPeriod"`
+}
+
+// Overall returns the SHA256 hash of all components concatenated, which is
+// backwards-compatible with External.Fingerprint.
+func (f FingerprintComponents) Overall() HexBytes {
+	if f.URL == nil && f.CloneArgs == nil && f.PullArgs == nil && f.TargetPath == nil && f.RefreshPeriod == nil {
+		return nil
+	}
+	h := sha256.New()
+	h.Write(f.URL)
+	h.Write(f.CloneArgs)
+	h.Write(f.PullArgs)
+	h.Write(f.TargetPath)
+	h.Write(f.RefreshPeriod)
+	var sum [32]byte
+	h.Sum(sum[:0])
+	return sum[:]
+}
+
+// isZero reports whether all components of f are nil.
+func (f FingerprintComponents) isZero() bool {
+	return f.URL == nil && f.CloneArgs == nil && f.PullArgs == nil && f.TargetPath == nil && f.RefreshPeriod == nil
+}
+
+// An ExternalConfigChange classifies the kind of configuration change for a
+// git-repo external.
+type ExternalConfigChange int
+
+const (
+	ExternalConfigChangeNone ExternalConfigChange = iota
+	ExternalConfigChangePullOnly
+	ExternalConfigChangeNeedsReclone
+)
+
+// RequiresReclone returns true if the change requires deleting the existing
+// directory and re-cloning (URL, clone.args, or targetPath changed).
+func (c ExternalConfigChange) RequiresReclone() bool {
+	return c == ExternalConfigChangeNeedsReclone
+}
+
+// ClassifyChange returns the kind of change between f and other. A nil
+// receiver (no stored state) is treated as
+// ExternalConfigChangeNeedsReclone when f is non-nil, because there is no
+// way to know whether the existing directory matches the new config.
+func (f FingerprintComponents) ClassifyChange(other FingerprintComponents) ExternalConfigChange {
+	fZero := f.isZero()
+	otherZero := other.isZero()
+	if fZero && otherZero {
+		return ExternalConfigChangeNone
+	}
+	if fZero || otherZero {
+		return ExternalConfigChangeNeedsReclone
+	}
+	urlChanged := !bytes.Equal(f.URL, other.URL)
+	cloneArgsChanged := !bytes.Equal(f.CloneArgs, other.CloneArgs)
+	targetPathChanged := !bytes.Equal(f.TargetPath, other.TargetPath)
+	if urlChanged || cloneArgsChanged || targetPathChanged {
+		return ExternalConfigChangeNeedsReclone
+	}
+	pullArgsChanged := !bytes.Equal(f.PullArgs, other.PullArgs)
+	refreshChanged := !bytes.Equal(f.RefreshPeriod, other.RefreshPeriod)
+	if pullArgsChanged || refreshChanged {
+		return ExternalConfigChangePullOnly
+	}
+	return ExternalConfigChangeNone
+}
+
+// FingerprintComponents returns the per-component fingerprints for a
+// git-repo external. For non-git-repo externals it returns the zero value.
+func (e *External) FingerprintComponents() FingerprintComponents {
+	if e.Type != ExternalTypeGitRepo {
+		return FingerprintComponents{}
+	}
+	hashSlice := func(s []string) HexBytes {
+		h := sha256.New()
+		for _, v := range s {
+			h.Write([]byte(v))
+			h.Write([]byte{0})
+		}
+		var sum [32]byte
+		h.Sum(sum[:0])
+		return sum[:]
+	}
+	hashString := func(s string) HexBytes {
+		sum := sha256.Sum256([]byte(s))
+		return sum[:]
+	}
+	return FingerprintComponents{
+		URL:           hashString(e.URL),
+		CloneArgs:     hashSlice(e.Clone.Args),
+		PullArgs:      hashSlice(e.Pull.Args),
+		TargetPath:    hashString(e.TargetPath),
+		RefreshPeriod: hashString(time.Duration(e.RefreshPeriod).String()),
+	}
+}
+
 func (e *External) Fingerprint() HexBytes {
 	if e.Type != ExternalTypeGitRepo {
 		return nil
 	}
-	h := sha256.New()
-	h.Write([]byte(e.URL))
-	h.Write([]byte{0})
-	for _, arg := range e.Clone.Args {
-		h.Write([]byte(arg))
-		h.Write([]byte{0})
-	}
-	for _, arg := range e.Pull.Args {
-		h.Write([]byte(arg))
-		h.Write([]byte{0})
-	}
-	h.Write([]byte(e.TargetPath))
-	h.Write([]byte{0})
-	h.Write([]byte(time.Duration(e.RefreshPeriod).String()))
-	h.Write([]byte{0})
-	var sum [32]byte
-	h.Sum(sum[:0])
-	return sum[:]
+	return e.FingerprintComponents().Overall()
 }
 
 func (e *External) IsExternal() bool {

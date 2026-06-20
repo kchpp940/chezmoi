@@ -27,11 +27,14 @@ type TargetStateEntry interface {
 // A TargetStateModifyDirWithCmd represents running a command that modifies
 // a directory.
 type TargetStateModifyDirWithCmd struct {
-	cmdFunc      func() *exec.Cmd
-	forceRefresh bool
-	fingerprint  HexBytes
-	refreshPeriod Duration
-	sourceAttr   SourceAttr
+	cmdFunc               func() *exec.Cmd
+	forceRefresh          bool
+	fingerprint           HexBytes
+	fingerprintComponents FingerprintComponents
+	configChange          ExternalConfigChange
+	reclone               bool
+	refreshPeriod         Duration
+	sourceAttr            SourceAttr
 }
 
 // A TargetStateDir represents the state of a directory in the target state.
@@ -73,9 +76,10 @@ type TargetStateSymlink struct {
 // A ModifyDirWithCmdState records the state of a directory modified by a
 // command.
 type ModifyDirWithCmdState struct {
-	Name       AbsPath   `json:"name"       yaml:"name"`
-	RunAt      time.Time `json:"runAt"      yaml:"runAt"`
-	Fingerprint HexBytes  `json:"fingerprint" yaml:"fingerprint"`
+	Name                  AbsPath               `json:"name"                  yaml:"name"`
+	RunAt                 time.Time             `json:"runAt"                 yaml:"runAt"`
+	Fingerprint           HexBytes              `json:"fingerprint"           yaml:"fingerprint"`
+	FingerprintComponents FingerprintComponents `json:"fingerprintComponents" yaml:"fingerprintComponents"`
 }
 
 // A ScriptState records the state of a script that has been run.
@@ -90,7 +94,11 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	persistentState PersistentState,
 	actualStateEntry ActualStateEntry,
 ) (bool, error) {
-	if _, ok := actualStateEntry.(*ActualStateDir); !ok {
+	if t.reclone {
+		if err := actualStateEntry.Remove(system); err != nil {
+			return false, err
+		}
+	} else if _, ok := actualStateEntry.(*ActualStateDir); !ok {
 		if err := actualStateEntry.Remove(system); err != nil {
 			return false, err
 		}
@@ -104,9 +112,10 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
 	if err := PersistentStateSet(
 		persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-			Name:       actualStateEntry.Path(),
-			RunAt:      runAt,
-			Fingerprint: t.fingerprint,
+			Name:                  actualStateEntry.Path(),
+			RunAt:                 runAt,
+			Fingerprint:           t.fingerprint,
+			FingerprintComponents: t.fingerprintComponents,
 		}); err != nil {
 		return false, err
 	}
@@ -130,6 +139,9 @@ func (t *TargetStateModifyDirWithCmd) Evaluate() error {
 // SkipApply implements TargetStateEntry.SkipApply.
 func (t *TargetStateModifyDirWithCmd) SkipApply(persistentState PersistentState, targetAbsPath AbsPath) (bool, error) {
 	if t.forceRefresh {
+		return false, nil
+	}
+	if t.configChange == ExternalConfigChangeNeedsReclone {
 		return false, nil
 	}
 	modifyDirWithCmdKey := []byte(targetAbsPath.String())

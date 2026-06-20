@@ -2112,6 +2112,7 @@ func (c *Config) newSourceState(
 	}, options...)...)
 
 	if err := sourceState.Read(ctx, &chezmoi.ReadOptions{
+		PersistentState:  c.persistentState,
 		RefreshExternals: c.refreshExternals,
 		ReadHTTPResponse: c.readHTTPResponse,
 	}); err != nil {
