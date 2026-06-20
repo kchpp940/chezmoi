@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoigit"
@@ -101,6 +102,31 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 			if err := checkGitRepoCleanForReclone(actualStateDir.Path()); err != nil {
 				return false, err
 			}
+			backupPath := AbsPath(actualStateDir.Path().String() + ".chezmoi-replace-backup-" + time.Now().Format("20060102-150405"))
+			if err := system.Rename(actualStateDir.Path(), backupPath); err != nil {
+				return false, fmt.Errorf("%s: cannot backup directory for reclone: %w", actualStateDir.Path(), err)
+			}
+			runAt := time.Now().UTC()
+			if err := system.RunCmd(t.cmdFunc()); err != nil {
+				if restoreErr := system.Rename(backupPath, actualStateDir.Path()); restoreErr != nil {
+					return false, fmt.Errorf("%s: clone failed (%w) and restore also failed (%v); backup at %s", actualStateDir.Path(), err, restoreErr, backupPath)
+				}
+				return false, fmt.Errorf("%s: clone failed, original directory restored: %w", actualStateDir.Path(), err)
+			}
+			if err := system.RemoveAll(backupPath); err != nil {
+				return true, fmt.Errorf("%s: cloned successfully but failed to remove backup %s: %w", actualStateDir.Path(), backupPath, err)
+			}
+			modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
+			if err := PersistentStateSet(
+				persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
+					Name:                  actualStateEntry.Path(),
+					RunAt:                 runAt,
+					Fingerprint:           t.fingerprint,
+					FingerprintComponents: t.fingerprintComponents,
+				}); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
 		if err := actualStateEntry.Remove(system); err != nil {
 			return false, err
@@ -568,7 +594,7 @@ func (e *ErrGitRepoDirty) Error() string {
 }
 
 func checkGitRepoCleanForReclone(dirAbsPath AbsPath) error {
-	cmd := exec.Command("git", "status", "--porcelain=v2")
+	cmd := exec.Command("git", "status", "--ignored", "--porcelain=v2")
 	cmd.Dir = dirAbsPath.String()
 	output, err := cmd.Output()
 	if err != nil {
@@ -600,6 +626,20 @@ func checkGitRepoCleanForReclone(dirAbsPath AbsPath) error {
 		return &ErrGitRepoDirty{
 			Path:    dirAbsPath,
 			Details: "has untracked files",
+		}
+	}
+	if len(status.Ignored) > 0 {
+		paths := make([]string, 0, len(status.Ignored))
+		for _, ig := range status.Ignored {
+			paths = append(paths, ig.Path)
+		}
+		detail := "has ignored files"
+		if len(paths) <= 5 {
+			detail = fmt.Sprintf("has ignored files (%s)", strings.Join(paths, ", "))
+		}
+		return &ErrGitRepoDirty{
+			Path:    dirAbsPath,
+			Details: detail,
 		}
 	}
 	return nil
