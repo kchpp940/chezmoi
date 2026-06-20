@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -32,7 +31,7 @@ func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ..
 }
 
 func (c *Config) bitwardenSecretsOutput(args []string) ([]byte, error) {
-	key := strings.Join(args, "\x00")
+	key := newSecretCacheKey(args...)
 	if data, ok := c.BitwardenSecrets.outputCache[key]; ok {
 		return data, nil
 	}

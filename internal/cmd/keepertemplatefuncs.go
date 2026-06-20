@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -49,7 +48,7 @@ func (c *Config) keeperFindPasswordTemplateFunc(record string) string {
 
 func (c *Config) keeperOutput(args []string) ([]byte, error) {
 	fullArgs := append(slices.Clone(args), c.Keeper.Args...)
-	key := strings.Join(fullArgs, "\x00")
+	key := newSecretCacheKey(fullArgs...)
 	if data, ok := c.Keeper.outputCache[key]; ok {
 		return data, nil
 	}

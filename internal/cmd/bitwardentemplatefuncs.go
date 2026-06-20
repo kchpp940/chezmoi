@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -85,7 +84,7 @@ func (c *Config) bitwardenMaybeUnlock() error {
 }
 
 func (c *Config) bitwardenOutput(args []string) ([]byte, error) {
-	key := strings.Join(args, "\x00")
+	key := newSecretCacheKey(args...)
 	if data, ok := c.Bitwarden.outputCache[key]; ok {
 		return data, nil
 	}

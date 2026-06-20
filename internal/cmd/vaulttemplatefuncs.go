@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -15,7 +14,7 @@ type vaultConfig struct {
 }
 
 func (c *Config) vaultTemplateFunc(key string) any {
-	cacheKey := strings.Join([]string{c.Vault.Command, "kv", "get", "-format=json", key}, "\x00")
+	cacheKey := newSecretCacheKey(c.Vault.Command, "kv", "get", "-format=json", key)
 	if data, ok := c.Vault.cache[cacheKey]; ok {
 		return data
 	}

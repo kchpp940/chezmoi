@@ -1,0 +1,60 @@
+mockcommand bin/keeper
+
+# test keeper with default config
+exec chezmoi execute-template '{{ (keeper "QOahgRH_dSTvSvhRBqzCzQ").record_uid }}'
+stdout '^QOahgRH_dSTvSvhRBqzCzQ$'
+
+# switch to home with different keeper args - cache should not leak
+chhome home2/user
+exec chezmoi execute-template '{{ (keeper "QOahgRH_dSTvSvhRBqzCzQ").record_uid }}'
+stdout '^QOahgRH_dSTvSvhRBqzCzQ-server2$'
+
+-- bin/keeper.yaml --
+responses:
+- args: 'get --format=json QOahgRH_dSTvSvhRBqzCzQ --config /path/to/config.json'
+  response: |
+    {
+      "record_uid": "QOahgRH_dSTvSvhRBqzCzQ",
+      "data": {
+        "title": "Example",
+        "type": "login",
+        "fields": [
+          {
+            "type": "login",
+            "value": ["mylogin"]
+          },
+          {
+            "type": "password",
+            "value": ["mypassword"]
+          }
+        ]
+      }
+    }
+- args: 'get --format=json QOahgRH_dSTvSvhRBqzCzQ --server server2.example.com'
+  response: |
+    {
+      "record_uid": "QOahgRH_dSTvSvhRBqzCzQ-server2",
+      "data": {
+        "title": "Example-Server2",
+        "type": "login",
+        "fields": [
+          {
+            "type": "login",
+            "value": ["mylogin2"]
+          },
+          {
+            "type": "password",
+            "value": ["mypassword2"]
+          }
+        ]
+      }
+    }
+default:
+  response: 'unknown command'
+  exitCode: 1
+-- home/user/.config/chezmoi/chezmoi.toml --
+[keeper]
+    args = ["--config", "/path/to/config.json"]
+-- home2/user/.config/chezmoi/chezmoi.toml --
+[keeper]
+    args = ["--server", "server2.example.com"]

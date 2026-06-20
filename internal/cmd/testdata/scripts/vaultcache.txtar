@@ -1,0 +1,40 @@
+mockcommand bin/vault
+
+# test vault template function with default command
+exec chezmoi execute-template '{{ (vault "secret/prod/examplesecret").data.data.password }}'
+stdout ^examplepassword$
+
+# switch to home with different vault command - cache should not leak
+chhome home2/user
+exec chezmoi execute-template '{{ (vault "secret/staging/examplesecret").data.data.password }}'
+stdout ^stagingpassword$
+
+-- bin/vault.yaml --
+responses:
+- args: 'kv get -format=json secret/prod/examplesecret'
+  response: |
+    {
+      "data": {
+        "data": {
+          "password": "examplepassword"
+        }
+      }
+    }
+- args: 'kv get -format=json secret/staging/examplesecret'
+  response: |
+    {
+      "data": {
+        "data": {
+          "password": "stagingpassword"
+        }
+      }
+    }
+default:
+  response: 'Usage: vault <command> [args]'
+  exitCode: 127
+-- home/user/.config/chezmoi/chezmoi.toml --
+[vault]
+    command = "vault"
+-- home2/user/.config/chezmoi/chezmoi.toml --
+[vault]
+    command = "vault"

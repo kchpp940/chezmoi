@@ -25,8 +25,8 @@ type awsSecretsManagerConfig struct {
 	jsonCache map[awsSecretsManagerCacheKey]map[string]any
 }
 
-func awsSecretsManagerCacheKeyString(region, profile string) string {
-	return region + "\x00" + profile
+func awsSecretsManagerSvcCacheKey(region, profile string) string {
+	return newSecretCacheKey(region, profile)
 }
 
 func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
@@ -39,7 +39,7 @@ func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
 		return secret
 	}
 
-	svcKey := awsSecretsManagerCacheKeyString(c.AWSSecretsManager.Region, c.AWSSecretsManager.Profile)
+	svcKey := awsSecretsManagerSvcCacheKey(c.AWSSecretsManager.Region, c.AWSSecretsManager.Profile)
 	if c.AWSSecretsManager.svcs == nil {
 		c.AWSSecretsManager.svcs = make(map[string]*secretsmanager.Client)
 	}

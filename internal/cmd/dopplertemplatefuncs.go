@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -69,7 +68,7 @@ func (c *Config) appendDopplerAdditionalArgs(args, additionalArgs []string) []st
 
 func (c *Config) dopplerOutput(args []string) ([]byte, error) {
 	args = append(slices.Clone(c.Doppler.Args), args...)
-	key := strings.Join(args, "\x00")
+	key := newSecretCacheKey(args...)
 	if data, ok := c.Doppler.outputCache[key]; ok {
 		return data, nil
 	}

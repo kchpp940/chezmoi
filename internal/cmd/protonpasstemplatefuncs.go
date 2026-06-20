@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -28,7 +27,7 @@ func (c *Config) protonPassJSONTemplateFunc(item string) any {
 }
 
 func (c *Config) protonPassOutput(args []string) ([]byte, error) {
-	key := strings.Join(args, "\x00")
+	key := newSecretCacheKey(args...)
 	if data, ok := c.ProtonPass.outputCache[key]; ok {
 		return data, nil
 	}

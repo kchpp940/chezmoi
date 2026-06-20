@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/coreos/go-semver/semver"
 
@@ -43,7 +42,7 @@ func (c *Config) rbwTemplateFunc(name string, extraArgs ...string) map[string]an
 }
 
 func (c *Config) rbwOutput(args []string) ([]byte, error) {
-	key := strings.Join(args, "\x00")
+	key := newSecretCacheKey(args...)
 	if data, ok := c.RBW.outputCache[key]; ok {
 		return data, nil
 	}

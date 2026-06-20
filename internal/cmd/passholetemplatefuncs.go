@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 
 	"github.com/coreos/go-semver/semver"
 
@@ -36,7 +35,7 @@ func (c *Config) passholeTemplateFunc(path, field string) string {
 	}
 	args = append(args, "show", "--field", field, path)
 
-	cacheKey := strings.Join(append([]string{c.Passhole.Command}, args...), "\x00")
+	cacheKey := newSecretCacheKey(append([]string{c.Passhole.Command}, args...)...)
 	if value, ok := c.Passhole.cache[cacheKey]; ok {
 		return value
 	}

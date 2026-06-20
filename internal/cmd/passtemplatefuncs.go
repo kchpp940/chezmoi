@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -37,7 +36,7 @@ func (c *Config) passRawTemplateFunc(id string) string {
 }
 
 func (c *Config) passOutput(id string) ([]byte, error) {
-	cacheKey := strings.Join([]string{c.Pass.Command, "show", id}, "\x00")
+	cacheKey := newSecretCacheKey(c.Pass.Command, "show", id)
 	if output, ok := c.Pass.cache[cacheKey]; ok {
 		return output, nil
 	}

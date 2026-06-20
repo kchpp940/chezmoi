@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
@@ -32,7 +31,7 @@ func (c *Config) dashlanePasswordTemplateFunc(filter string) any {
 
 func (c *Config) dashlaneOutput(args ...string) ([]byte, error) {
 	fullArgs := append(slices.Clone(c.Dashlane.Args), args...)
-	key := strings.Join(fullArgs, "\x00")
+	key := newSecretCacheKey(fullArgs...)
 	if output, ok := c.Dashlane.outputCache[key]; ok {
 		return output, nil
 	}

@@ -2,14 +2,23 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
+
+func newSecretCacheKey(parts ...string) string {
+	var buf bytes.Buffer
+	for _, part := range parts {
+		_ = binary.Write(&buf, binary.BigEndian, uint32(len(part)))
+		buf.WriteString(part)
+	}
+	return buf.String()
+}
 
 type secretConfig struct {
 	Command string   `json:"command" mapstructure:"command" yaml:"command"`
@@ -30,7 +39,7 @@ func (c *Config) secretJSONTemplateFunc(args ...string) any {
 
 func (c *Config) secretOutput(args []string) ([]byte, error) {
 	fullArgs := append(slices.Clone(c.Secret.Args), args...)
-	key := strings.Join(append([]string{c.Secret.Command}, fullArgs...), "\x00")
+	key := newSecretCacheKey(append([]string{c.Secret.Command}, fullArgs...)...)
 	if output, ok := c.Secret.cache[key]; ok {
 		return output, nil
 	}

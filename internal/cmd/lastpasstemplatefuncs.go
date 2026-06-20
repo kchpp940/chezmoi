@@ -42,7 +42,7 @@ func (c *Config) lastpassRawTemplateFunc(id string) []map[string]any {
 }
 
 func (c *Config) lastpassData(id string) ([]map[string]any, error) {
-	cacheKey := strings.Join([]string{c.Lastpass.Command, "show", "--json", id}, "\x00")
+	cacheKey := newSecretCacheKey(c.Lastpass.Command, "show", "--json", id)
 	if data, ok := c.Lastpass.cache[cacheKey]; ok {
 		return data, nil
 	}

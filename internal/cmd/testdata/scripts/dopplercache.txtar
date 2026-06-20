@@ -1,0 +1,54 @@
+mockcommand bin/doppler
+
+# test doppler with global config returns prod password
+exec chezmoi execute-template '{{ doppler "PASSWORD" }}'
+stdout ^prod-password$
+
+# test doppler with explicit project/config returns different value
+exec chezmoi execute-template '{{ doppler "PASSWORD" "staging" "default" }}'
+stdout ^staging-password$
+
+# test doppler with another project/config returns different value
+exec chezmoi execute-template '{{ doppler "PASSWORD" "dev" "default" }}'
+stdout ^dev-password$
+
+# switch to home with different default project
+chhome home2/user
+
+# test doppler with new default config - cache should not leak from previous home
+exec chezmoi execute-template '{{ doppler "PASSWORD" }}'
+stdout ^qa-password$
+
+-- bin/doppler.yaml --
+responses:
+- args: 'secrets download --json --no-file --project prod --config default'
+  response: |
+    {
+      "PASSWORD": "prod-password"
+    }
+- args: 'secrets download --json --no-file --project staging --config default'
+  response: |
+    {
+      "PASSWORD": "staging-password"
+    }
+- args: 'secrets download --json --no-file --project dev --config default'
+  response: |
+    {
+      "PASSWORD": "dev-password"
+    }
+- args: 'secrets download --json --no-file --project qa --config qa-config'
+  response: |
+    {
+      "PASSWORD": "qa-password"
+    }
+default:
+  response: 'unknown command: $*'
+  exitCode: 1
+-- home/user/.config/chezmoi/chezmoi.toml --
+[doppler]
+    project = "prod"
+    config = "default"
+-- home2/user/.config/chezmoi/chezmoi.toml --
+[doppler]
+    project = "qa"
+    config = "qa-config"
