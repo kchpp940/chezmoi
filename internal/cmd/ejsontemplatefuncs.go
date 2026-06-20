@@ -6,19 +6,30 @@ import (
 	"github.com/Shopify/ejson"
 )
 
+type ejsonCacheKey struct {
+	filePath string
+	keyDir   string
+	key      string
+}
+
 type ejsonConfig struct {
 	KeyDir string `json:"keyDir" mapstructure:"keyDir" yaml:"keyDir"`
 	Key    string `json:"key"    mapstructure:"key"    yaml:"key"`
-	cache  map[string]any
+	cache  map[ejsonCacheKey]any
 }
 
 func (c *Config) ejsonDecryptWithKeyTemplateFunc(filePath, key string) any {
-	if data, ok := c.Ejson.cache[filePath]; ok {
+	cacheKey := ejsonCacheKey{
+		filePath: filePath,
+		keyDir:   c.Ejson.KeyDir,
+		key:      key,
+	}
+	if data, ok := c.Ejson.cache[cacheKey]; ok {
 		return data
 	}
 
 	if c.Ejson.cache == nil {
-		c.Ejson.cache = make(map[string]any)
+		c.Ejson.cache = make(map[ejsonCacheKey]any)
 	}
 
 	decrypted := mustValue(ejson.DecryptFile(filePath, c.Ejson.KeyDir, key))
@@ -26,7 +37,7 @@ func (c *Config) ejsonDecryptWithKeyTemplateFunc(filePath, key string) any {
 	var data any
 	must(json.Unmarshal(decrypted, &data))
 
-	c.Ejson.cache[filePath] = data
+	c.Ejson.cache[cacheKey] = data
 
 	return data
 }

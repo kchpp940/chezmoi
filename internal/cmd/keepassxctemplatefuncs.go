@@ -29,8 +29,16 @@ const (
 )
 
 type keepassxcAttributeCacheKey struct {
+	database  string
+	mode      keepassxcMode
 	entry     string
 	attribute string
+}
+
+type keepassxcCacheKey struct {
+	database string
+	mode     keepassxcMode
+	entry    string
 }
 
 type keepassxcConfig struct {
@@ -42,8 +50,8 @@ type keepassxcConfig struct {
 	cmd             *exec.Cmd
 	console         *expect.Console
 	promptStr       string
-	cache           map[string]map[string]string
-	attachmentCache map[string]map[string]string
+	cache           map[keepassxcCacheKey]map[string]string
+	attachmentCache map[keepassxcCacheKey]map[string]string
 	attributeCache  map[keepassxcAttributeCacheKey]string
 	password        string
 }
@@ -61,8 +69,15 @@ var (
 )
 
 func (c *Config) keepassxcAttachmentTemplateFunc(entry, name string) string {
-	if data, ok := c.Keepassxc.attachmentCache[entry][name]; ok {
-		return data
+	cacheKey := keepassxcCacheKey{
+		database: c.Keepassxc.Database.String(),
+		mode:     c.Keepassxc.Mode,
+		entry:    entry,
+	}
+	if data, ok := c.Keepassxc.attachmentCache[cacheKey]; ok {
+		if att, ok := data[name]; ok {
+			return att
+		}
 	}
 
 	switch c.Keepassxc.Mode {
@@ -78,11 +93,13 @@ func (c *Config) keepassxcAttachmentTemplateFunc(entry, name string) string {
 		must(os.Remove(tempFilename))
 		return string(data)
 	case keepassxcModeBuiltin:
-		c.Keepassxc.cache[entry] = c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapAttachmentCache)
-		if data, ok := c.Keepassxc.cache[entry]; ok {
-			if att, ok := data[name]; ok {
-				return att
-			}
+		values := c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapAttachmentCache)
+		if c.Keepassxc.attachmentCache == nil {
+			c.Keepassxc.attachmentCache = make(map[keepassxcCacheKey]map[string]string)
+		}
+		c.Keepassxc.attachmentCache[cacheKey] = values
+		if att, ok := values[name]; ok {
+			return att
 		}
 		panic(fmt.Sprintf("attachment %s of entry %s not found", name, entry))
 	default:
@@ -91,17 +108,23 @@ func (c *Config) keepassxcAttachmentTemplateFunc(entry, name string) string {
 }
 
 func (c *Config) keepassxcTemplateFunc(entry string) map[string]string {
+	cacheKey := keepassxcCacheKey{
+		database: c.Keepassxc.Database.String(),
+		mode:     c.Keepassxc.Mode,
+		entry:    entry,
+	}
 	if c.Keepassxc.cache == nil {
-		c.Keepassxc.cache = make(map[string]map[string]string)
+		c.Keepassxc.cache = make(map[keepassxcCacheKey]map[string]string)
 	}
 
-	if data, ok := c.Keepassxc.cache[entry]; ok {
+	if data, ok := c.Keepassxc.cache[cacheKey]; ok {
 		return data
 	}
 
 	if c.Keepassxc.Mode == keepassxcModeBuiltin {
-		c.Keepassxc.cache[entry] = c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapValueCache)
-		return c.Keepassxc.cache[entry]
+		data := c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapValueCache)
+		c.Keepassxc.cache[cacheKey] = data
+		return data
 	}
 
 	args := []string{"--quiet", "--show-protected", entry}
@@ -109,7 +132,7 @@ func (c *Config) keepassxcTemplateFunc(entry string) map[string]string {
 
 	data := keepassxcParseOutput(output)
 
-	c.Keepassxc.cache[entry] = data
+	c.Keepassxc.cache[cacheKey] = data
 
 	return data
 }
@@ -117,20 +140,27 @@ func (c *Config) keepassxcTemplateFunc(entry string) map[string]string {
 func (c *Config) keepassxcAttributeTemplateFunc(entry, attribute string) string {
 	if c.Keepassxc.Mode == keepassxcModeBuiltin {
 		// builtin stores attributes in cache
+		cacheKey := keepassxcCacheKey{
+			database: c.Keepassxc.Database.String(),
+			mode:     c.Keepassxc.Mode,
+			entry:    entry,
+		}
 		if c.Keepassxc.cache == nil {
-			c.Keepassxc.cache = make(map[string]map[string]string)
+			c.Keepassxc.cache = make(map[keepassxcCacheKey]map[string]string)
 		}
-		if data, ok := c.Keepassxc.cache[entry]; ok {
+		if data, ok := c.Keepassxc.cache[cacheKey]; ok {
 			return data[attribute]
 		}
-		c.Keepassxc.cache[entry] = c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapValueCache)
-		if data, ok := c.Keepassxc.cache[entry]; ok {
+		c.Keepassxc.cache[cacheKey] = c.keepassxcBuiltinExtractValues(entry, keepassxcBuiltinMapValueCache)
+		if data, ok := c.Keepassxc.cache[cacheKey]; ok {
 			return data[attribute]
 		}
-		panic(fmt.Sprintf("attribute %s of entry %s not found", entry, attribute))
+		panic(fmt.Sprintf("attribute %s of entry %s not found", attribute, entry))
 	}
 
 	key := keepassxcAttributeCacheKey{
+		database:  c.Keepassxc.Database.String(),
+		mode:      c.Keepassxc.Mode,
 		entry:     entry,
 		attribute: attribute,
 	}

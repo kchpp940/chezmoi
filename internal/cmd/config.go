@@ -928,6 +928,8 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
 
+	c.clearSecretCaches()
+
 	if err := c.setEncryption(); err != nil {
 		return err
 	}
@@ -2112,7 +2114,6 @@ func (c *Config) newSourceState(
 	}, options...)...)
 
 	if err := sourceState.Read(ctx, &chezmoi.ReadOptions{
-		PersistentState:  c.persistentState,
 		RefreshExternals: c.refreshExternals,
 		ReadHTTPResponse: c.readHTTPResponse,
 	}); err != nil {

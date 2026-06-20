@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
@@ -47,14 +48,14 @@ func (c *Config) keeperFindPasswordTemplateFunc(record string) string {
 }
 
 func (c *Config) keeperOutput(args []string) ([]byte, error) {
-	key := strings.Join(args, "\x00")
+	fullArgs := append(slices.Clone(args), c.Keeper.Args...)
+	key := strings.Join(fullArgs, "\x00")
 	if data, ok := c.Keeper.outputCache[key]; ok {
 		return data, nil
 	}
 
 	name := c.Keeper.Command
-	args = append(args, c.Keeper.Args...)
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, fullArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stderr = os.Stderr
 	output, err := chezmoilog.LogCmdOutput(c.logger, cmd)

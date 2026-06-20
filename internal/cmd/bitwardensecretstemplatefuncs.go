@@ -33,7 +33,7 @@ func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ..
 
 func (c *Config) bitwardenSecretsOutput(args []string) ([]byte, error) {
 	key := strings.Join(args, "\x00")
-	if data, ok := c.Bitwarden.outputCache[key]; ok {
+	if data, ok := c.BitwardenSecrets.outputCache[key]; ok {
 		return data, nil
 	}
 

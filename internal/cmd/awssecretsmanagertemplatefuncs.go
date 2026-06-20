@@ -4,26 +4,47 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 )
 
+type awsSecretsManagerCacheKey struct {
+	region  string
+	profile string
+	arn     string
+}
+
 type awsSecretsManagerConfig struct {
 	Region    string `json:"region"  mapstructure:"region"  yaml:"region"`
 	Profile   string `json:"profile" mapstructure:"profile" yaml:"profile"`
-	svc       *secretsmanager.Client
-	cache     map[string]string
-	jsonCache map[string]map[string]any
+	svcs      map[string]*secretsmanager.Client
+	cache     map[awsSecretsManagerCacheKey]string
+	jsonCache map[awsSecretsManagerCacheKey]map[string]any
+}
+
+func awsSecretsManagerCacheKeyString(region, profile string) string {
+	return region + "\x00" + profile
 }
 
 func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
-	if secret, ok := c.AWSSecretsManager.cache[arn]; ok {
+	key := awsSecretsManagerCacheKey{
+		region:  c.AWSSecretsManager.Region,
+		profile: c.AWSSecretsManager.Profile,
+		arn:     arn,
+	}
+	if secret, ok := c.AWSSecretsManager.cache[key]; ok {
 		return secret
 	}
 
-	if c.AWSSecretsManager.svc == nil {
+	svcKey := awsSecretsManagerCacheKeyString(c.AWSSecretsManager.Region, c.AWSSecretsManager.Profile)
+	if c.AWSSecretsManager.svcs == nil {
+		c.AWSSecretsManager.svcs = make(map[string]*secretsmanager.Client)
+	}
+	svc, ok := c.AWSSecretsManager.svcs[svcKey]
+	if !ok {
 		var opts []func(*config.LoadOptions) error
 		if region := c.AWSSecretsManager.Region; region != "" {
 			opts = append(opts, config.WithRegion(region))
@@ -39,14 +60,15 @@ func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
 			panic(err)
 		}
 
-		c.AWSSecretsManager.svc = secretsmanager.NewFromConfig(cfg)
+		svc = secretsmanager.NewFromConfig(cfg)
+		c.AWSSecretsManager.svcs[svcKey] = svc
 	}
 
-	result, err := c.AWSSecretsManager.svc.GetSecretValue(context.Background(), &secretsmanager.GetSecretValueInput{
+	result, err := svc.GetSecretValue(context.Background(), &secretsmanager.GetSecretValueInput{
 		SecretId: aws.String(arn),
 	})
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("aws secrets manager %s: %w", arn, err))
 	}
 
 	var secret string
@@ -63,15 +85,20 @@ func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
 	}
 
 	if c.AWSSecretsManager.cache == nil {
-		c.AWSSecretsManager.cache = make(map[string]string)
+		c.AWSSecretsManager.cache = make(map[awsSecretsManagerCacheKey]string)
 	}
 
-	c.AWSSecretsManager.cache[arn] = secret
+	c.AWSSecretsManager.cache[key] = secret
 	return secret
 }
 
 func (c *Config) awsSecretsManagerTemplateFunc(arn string) map[string]any {
-	if secret, ok := c.AWSSecretsManager.jsonCache[arn]; ok {
+	key := awsSecretsManagerCacheKey{
+		region:  c.AWSSecretsManager.Region,
+		profile: c.AWSSecretsManager.Profile,
+		arn:     arn,
+	}
+	if secret, ok := c.AWSSecretsManager.jsonCache[key]; ok {
 		return secret
 	}
 
@@ -83,9 +110,9 @@ func (c *Config) awsSecretsManagerTemplateFunc(arn string) map[string]any {
 	}
 
 	if c.AWSSecretsManager.jsonCache == nil {
-		c.AWSSecretsManager.jsonCache = make(map[string]map[string]any)
+		c.AWSSecretsManager.jsonCache = make(map[awsSecretsManagerCacheKey]map[string]any)
 	}
 
-	c.AWSSecretsManager.jsonCache[arn] = data
+	c.AWSSecretsManager.jsonCache[key] = data
 	return data
 }

@@ -8,10 +8,7 @@ import (
 	"io/fs"
 	"os/exec"
 	"runtime"
-	"strings"
 	"time"
-
-	"chezmoi.io/chezmoi/v2/internal/chezmoigit"
 )
 
 // A TargetStateEntry represents the state of an entry in the target state.
@@ -30,14 +27,10 @@ type TargetStateEntry interface {
 // A TargetStateModifyDirWithCmd represents running a command that modifies
 // a directory.
 type TargetStateModifyDirWithCmd struct {
-	cmdFunc               func() *exec.Cmd
-	forceRefresh          bool
-	fingerprint           HexBytes
-	fingerprintComponents FingerprintComponents
-	configChange          ExternalConfigChange
-	reclone               bool
-	refreshPeriod         Duration
-	sourceAttr            SourceAttr
+	cmdFunc       func() *exec.Cmd
+	forceRefresh  bool
+	refreshPeriod Duration
+	sourceAttr    SourceAttr
 }
 
 // A TargetStateDir represents the state of a directory in the target state.
@@ -79,10 +72,8 @@ type TargetStateSymlink struct {
 // A ModifyDirWithCmdState records the state of a directory modified by a
 // command.
 type ModifyDirWithCmdState struct {
-	Name                  AbsPath               `json:"name"                  yaml:"name"`
-	RunAt                 time.Time             `json:"runAt"                 yaml:"runAt"`
-	Fingerprint           HexBytes              `json:"fingerprint"           yaml:"fingerprint"`
-	FingerprintComponents FingerprintComponents `json:"fingerprintComponents" yaml:"fingerprintComponents"`
+	Name  AbsPath   `json:"name"  yaml:"name"`
+	RunAt time.Time `json:"runAt" yaml:"runAt"`
 }
 
 // A ScriptState records the state of a script that has been run.
@@ -97,42 +88,7 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	persistentState PersistentState,
 	actualStateEntry ActualStateEntry,
 ) (bool, error) {
-	if t.reclone {
-		if actualStateDir, ok := actualStateEntry.(*ActualStateDir); ok {
-			if err := checkGitRepoCleanForReclone(actualStateDir.Path()); err != nil {
-				return false, err
-			}
-			backupPath := AbsPath(actualStateDir.Path().String() + ".chezmoi-replace-backup-" + time.Now().Format("20060102-150405"))
-			if err := system.Rename(actualStateDir.Path(), backupPath); err != nil {
-				return false, fmt.Errorf("%s: cannot backup directory for reclone: %w", actualStateDir.Path(), err)
-			}
-			runAt := time.Now().UTC()
-			if err := system.RunCmd(t.cmdFunc()); err != nil {
-				_ = system.RemoveAll(actualStateDir.Path())
-				if restoreErr := system.Rename(backupPath, actualStateDir.Path()); restoreErr != nil {
-					return false, fmt.Errorf("%s: clone failed (%w) and restore also failed (%v); backup at %s", actualStateDir.Path(), err, restoreErr, backupPath)
-				}
-				return false, fmt.Errorf("%s: clone failed, original directory restored: %w", actualStateDir.Path(), err)
-			}
-			if err := system.RemoveAll(backupPath); err != nil {
-				return true, fmt.Errorf("%s: cloned successfully but failed to remove backup %s: %w", actualStateDir.Path(), backupPath, err)
-			}
-			modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
-			if err := PersistentStateSet(
-				persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-					Name:                  actualStateEntry.Path(),
-					RunAt:                 runAt,
-					Fingerprint:           t.fingerprint,
-					FingerprintComponents: t.fingerprintComponents,
-				}); err != nil {
-				return false, err
-			}
-			return true, nil
-		}
-		if err := actualStateEntry.Remove(system); err != nil {
-			return false, err
-		}
-	} else if _, ok := actualStateEntry.(*ActualStateDir); !ok {
+	if _, ok := actualStateEntry.(*ActualStateDir); !ok {
 		if err := actualStateEntry.Remove(system); err != nil {
 			return false, err
 		}
@@ -146,10 +102,8 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
 	if err := PersistentStateSet(
 		persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-			Name:                  actualStateEntry.Path(),
-			RunAt:                 runAt,
-			Fingerprint:           t.fingerprint,
-			FingerprintComponents: t.fingerprintComponents,
+			Name:  actualStateEntry.Path(),
+			RunAt: runAt,
 		}); err != nil {
 		return false, err
 	}
@@ -175,9 +129,6 @@ func (t *TargetStateModifyDirWithCmd) SkipApply(persistentState PersistentState,
 	if t.forceRefresh {
 		return false, nil
 	}
-	if t.configChange == ExternalConfigChangeNeedsReclone {
-		return false, nil
-	}
 	modifyDirWithCmdKey := []byte(targetAbsPath.String())
 	switch modifyDirWithCmdStateBytes, err := persistentState.Get(GitRepoExternalStateBucket, modifyDirWithCmdKey); {
 	case err != nil:
@@ -188,9 +139,6 @@ func (t *TargetStateModifyDirWithCmd) SkipApply(persistentState PersistentState,
 		var modifyDirWithCmdState ModifyDirWithCmdState
 		if err := stateFormat.Unmarshal(modifyDirWithCmdStateBytes, &modifyDirWithCmdState); err != nil {
 			return false, err
-		}
-		if t.fingerprint != nil && !bytes.Equal(t.fingerprint, modifyDirWithCmdState.Fingerprint) {
-			return false, nil
 		}
 		if t.refreshPeriod == 0 {
 			return true, nil
@@ -583,65 +531,4 @@ func (t *TargetStateSymlink) SkipApply(persistentState PersistentState, targetAb
 // SourceAttr implements TargetStateEntry.SourceAttr.
 func (t *TargetStateSymlink) SourceAttr() SourceAttr {
 	return t.sourceAttr
-}
-
-type ErrGitRepoDirty struct {
-	Path    AbsPath
-	Details string
-}
-
-func (e *ErrGitRepoDirty) Error() string {
-	return fmt.Sprintf("%s: cannot reclone git-repo external: %s; resolve local changes or remove the directory manually and re-run chezmoi apply", e.Path, e.Details)
-}
-
-func checkGitRepoCleanForReclone(dirAbsPath AbsPath) error {
-	cmd := exec.Command("git", "status", "--ignored", "--porcelain=v2")
-	cmd.Dir = dirAbsPath.String()
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("%s: cannot check git status for reclone: %w", dirAbsPath, err)
-	}
-	status, err := chezmoigit.ParseStatusPorcelainV2(output)
-	if err != nil {
-		return fmt.Errorf("%s: cannot parse git status for reclone: %w", dirAbsPath, err)
-	}
-	if len(status.Ordinary) > 0 {
-		return &ErrGitRepoDirty{
-			Path:    dirAbsPath,
-			Details: "has modified files",
-		}
-	}
-	if len(status.Unmerged) > 0 {
-		return &ErrGitRepoDirty{
-			Path:    dirAbsPath,
-			Details: "has unmerged files",
-		}
-	}
-	if len(status.RenamedOrCopied) > 0 {
-		return &ErrGitRepoDirty{
-			Path:    dirAbsPath,
-			Details: "has renamed or copied files",
-		}
-	}
-	if len(status.Untracked) > 0 {
-		return &ErrGitRepoDirty{
-			Path:    dirAbsPath,
-			Details: "has untracked files",
-		}
-	}
-	if len(status.Ignored) > 0 {
-		paths := make([]string, 0, len(status.Ignored))
-		for _, ig := range status.Ignored {
-			paths = append(paths, ig.Path)
-		}
-		detail := "has ignored files"
-		if len(paths) <= 5 {
-			detail = fmt.Sprintf("has ignored files (%s)", strings.Join(paths, ", "))
-		}
-		return &ErrGitRepoDirty{
-			Path:    dirAbsPath,
-			Details: detail,
-		}
-	}
-	return nil
 }

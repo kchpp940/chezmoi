@@ -38,15 +38,11 @@ type SourceStateEntry interface {
 
 // A SourceStateCommand represents a command that should be run.
 type SourceStateCommand struct {
-	cmdFunc               func() *exec.Cmd
-	origin                SourceStateOrigin
-	forceRefresh          bool
-	fingerprint           HexBytes
-	fingerprintComponents FingerprintComponents
-	configChange          ExternalConfigChange
-	reclone               bool
-	refreshPeriod         Duration
-	sourceAttr            SourceAttr
+	cmdFunc       func() *exec.Cmd
+	origin        SourceStateOrigin
+	forceRefresh  bool
+	refreshPeriod Duration
+	sourceAttr    SourceAttr
 }
 
 // A SourceStateDir represents the state of a directory in the source state.
@@ -124,14 +120,10 @@ func (s *SourceStateCommand) SourceRelPath() SourceRelPath {
 // TargetStateEntry returns s's target state entry.
 func (s *SourceStateCommand) TargetStateEntry(destSystem System, destDirAbsPath AbsPath) (TargetStateEntry, error) {
 	return &TargetStateModifyDirWithCmd{
-		cmdFunc:               s.cmdFunc,
-		forceRefresh:          s.forceRefresh,
-		fingerprint:           s.fingerprint,
-		fingerprintComponents: s.fingerprintComponents,
-		configChange:          s.configChange,
-		reclone:               s.reclone,
-		refreshPeriod:         s.refreshPeriod,
-		sourceAttr:            s.sourceAttr,
+		cmdFunc:       s.cmdFunc,
+		forceRefresh:  s.forceRefresh,
+		refreshPeriod: s.refreshPeriod,
+		sourceAttr:    s.sourceAttr,
 	}, nil
 }
 

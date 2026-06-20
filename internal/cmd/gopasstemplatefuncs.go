@@ -24,11 +24,16 @@ const (
 )
 
 var (
-	// chezmoi uses gopass show --password which was added in v1.6.1.
 	gopassMinVersion  = semver.Version{Major: 1, Minor: 6, Patch: 1}
 	gopassVersionArgs = []string{"--version"}
 	gopassVersionRx   = regexp.MustCompile(`gopass\s+(\d+\.\d+\.\d+)`)
 )
+
+type gopassCacheKey struct {
+	command string
+	mode    gopassMode
+	id      string
+}
 
 type gopassConfig struct {
 	Command       string          `json:"command" mapstructure:"command" yaml:"command"`
@@ -37,12 +42,17 @@ type gopassConfig struct {
 	client        *api.Gopass
 	clientErr     error
 	passwordCache map[string][]byte
-	cache         map[string]string
-	rawCache      map[string][]byte
+	cache         map[gopassCacheKey]string
+	rawCache      map[gopassCacheKey][]byte
 }
 
 func (c *Config) gopassTemplateFunc(id string) string {
-	if password, ok := c.Gopass.cache[id]; ok {
+	cacheKey := gopassCacheKey{
+		command: c.Gopass.Command,
+		mode:    c.Gopass.Mode,
+		id:      id,
+	}
+	if password, ok := c.Gopass.cache[cacheKey]; ok {
 		return password
 	}
 
@@ -59,15 +69,20 @@ func (c *Config) gopassTemplateFunc(id string) string {
 	}
 
 	if c.Gopass.cache == nil {
-		c.Gopass.cache = make(map[string]string)
+		c.Gopass.cache = make(map[gopassCacheKey]string)
 	}
-	c.Gopass.cache[id] = password
+	c.Gopass.cache[cacheKey] = password
 
 	return password
 }
 
 func (c *Config) gopassRawTemplateFunc(id string) string {
-	if output, ok := c.Gopass.rawCache[id]; ok {
+	cacheKey := gopassCacheKey{
+		command: c.Gopass.Command,
+		mode:    c.Gopass.Mode,
+		id:      id,
+	}
+	if output, ok := c.Gopass.rawCache[cacheKey]; ok {
 		return string(output)
 	}
 
@@ -82,9 +97,9 @@ func (c *Config) gopassRawTemplateFunc(id string) string {
 	}
 
 	if c.Gopass.rawCache == nil {
-		c.Gopass.rawCache = make(map[string][]byte)
+		c.Gopass.rawCache = make(map[gopassCacheKey][]byte)
 	}
-	c.Gopass.rawCache[id] = output
+	c.Gopass.rawCache[cacheKey] = output
 
 	return string(output)
 }
