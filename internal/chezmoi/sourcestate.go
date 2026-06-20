@@ -1288,11 +1288,6 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 			case errors.Is(err, fs.ErrNotExist):
 				// FIXME add support for using builtin git
 				sourceStateCommand := &SourceStateCommand{
-					// Use a sync.OnceValue to defer the call to
-					// os/exec.Command because os/exec.Command calls
-					// os/exec.LookupPath and therefore depends on the state of
-					// $PATH when os/exec.Command is called, not the state of
-					// $PATH when os/exec.Cmd.{Run,Start} is called.
 					cmdFunc: sync.OnceValue(func() *exec.Cmd {
 						args := []string{"clone"}
 						args = append(args, external.Clone.Args...)
@@ -1305,6 +1300,7 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 					}),
 					origin:        external,
 					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
+					fingerprint:   external.Fingerprint(),
 					refreshPeriod: external.RefreshPeriod,
 					sourceAttr: SourceAttr{
 						External: true,
@@ -1316,11 +1312,6 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 			default:
 				// FIXME add support for using builtin git
 				sourceStateCommand := &SourceStateCommand{
-					// Use a sync.OnceValue to defer the call to
-					// os/exec.Command because os/exec.Command calls
-					// os/exec.LookupPath and therefore depends on the state of
-					// $PATH when os/exec.Command is called, not the state of
-					// $PATH when os/exec.Cmd.{Run,Start} is called.
 					cmdFunc: sync.OnceValue(func() *exec.Cmd {
 						args := []string{"pull"}
 						args = append(args, external.Pull.Args...)
@@ -1333,6 +1324,7 @@ func (s *SourceState) Read(ctx context.Context, options *ReadOptions) error {
 					}),
 					origin:        external,
 					forceRefresh:  options.RefreshExternals == RefreshExternalsAlways,
+					fingerprint:   external.Fingerprint(),
 					refreshPeriod: external.RefreshPeriod,
 					sourceAttr: SourceAttr{
 						External: true,
@@ -3045,6 +3037,30 @@ func (s *SourceState) sourceStateEntry(
 	default:
 		panic(fmt.Sprintf("%T: unsupported type", actualStateEntry))
 	}
+}
+
+func (e *External) Fingerprint() HexBytes {
+	if e.Type != ExternalTypeGitRepo {
+		return nil
+	}
+	h := sha256.New()
+	h.Write([]byte(e.URL))
+	h.Write([]byte{0})
+	for _, arg := range e.Clone.Args {
+		h.Write([]byte(arg))
+		h.Write([]byte{0})
+	}
+	for _, arg := range e.Pull.Args {
+		h.Write([]byte(arg))
+		h.Write([]byte{0})
+	}
+	h.Write([]byte(e.TargetPath))
+	h.Write([]byte{0})
+	h.Write([]byte(time.Duration(e.RefreshPeriod).String()))
+	h.Write([]byte{0})
+	var sum [32]byte
+	h.Sum(sum[:0])
+	return sum[:]
 }
 
 func (e *External) IsExternal() bool {

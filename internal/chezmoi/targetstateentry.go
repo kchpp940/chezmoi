@@ -27,10 +27,11 @@ type TargetStateEntry interface {
 // A TargetStateModifyDirWithCmd represents running a command that modifies
 // a directory.
 type TargetStateModifyDirWithCmd struct {
-	cmdFunc       func() *exec.Cmd
-	forceRefresh  bool
+	cmdFunc      func() *exec.Cmd
+	forceRefresh bool
+	fingerprint  HexBytes
 	refreshPeriod Duration
-	sourceAttr    SourceAttr
+	sourceAttr   SourceAttr
 }
 
 // A TargetStateDir represents the state of a directory in the target state.
@@ -72,8 +73,9 @@ type TargetStateSymlink struct {
 // A ModifyDirWithCmdState records the state of a directory modified by a
 // command.
 type ModifyDirWithCmdState struct {
-	Name  AbsPath   `json:"name"  yaml:"name"`
-	RunAt time.Time `json:"runAt" yaml:"runAt"`
+	Name       AbsPath   `json:"name"       yaml:"name"`
+	RunAt      time.Time `json:"runAt"      yaml:"runAt"`
+	Fingerprint HexBytes  `json:"fingerprint" yaml:"fingerprint"`
 }
 
 // A ScriptState records the state of a script that has been run.
@@ -102,8 +104,9 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
 	if err := PersistentStateSet(
 		persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-			Name:  actualStateEntry.Path(),
-			RunAt: runAt,
+			Name:       actualStateEntry.Path(),
+			RunAt:      runAt,
+			Fingerprint: t.fingerprint,
 		}); err != nil {
 		return false, err
 	}
@@ -139,6 +142,9 @@ func (t *TargetStateModifyDirWithCmd) SkipApply(persistentState PersistentState,
 		var modifyDirWithCmdState ModifyDirWithCmdState
 		if err := stateFormat.Unmarshal(modifyDirWithCmdStateBytes, &modifyDirWithCmdState); err != nil {
 			return false, err
+		}
+		if t.fingerprint != nil && !bytes.Equal(t.fingerprint, modifyDirWithCmdState.Fingerprint) {
+			return false, nil
 		}
 		if t.refreshPeriod == 0 {
 			return true, nil

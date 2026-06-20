@@ -41,6 +41,7 @@ type SourceStateCommand struct {
 	cmdFunc       func() *exec.Cmd
 	origin        SourceStateOrigin
 	forceRefresh  bool
+	fingerprint   HexBytes
 	refreshPeriod Duration
 	sourceAttr    SourceAttr
 }
@@ -122,6 +123,7 @@ func (s *SourceStateCommand) TargetStateEntry(destSystem System, destDirAbsPath 
 	return &TargetStateModifyDirWithCmd{
 		cmdFunc:       s.cmdFunc,
 		forceRefresh:  s.forceRefresh,
+		fingerprint:   s.fingerprint,
 		refreshPeriod: s.refreshPeriod,
 		sourceAttr:    s.sourceAttr,
 	}, nil
