@@ -108,6 +108,7 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 			}
 			runAt := time.Now().UTC()
 			if err := system.RunCmd(t.cmdFunc()); err != nil {
+				_ = system.RemoveAll(actualStateDir.Path())
 				if restoreErr := system.Rename(backupPath, actualStateDir.Path()); restoreErr != nil {
 					return false, fmt.Errorf("%s: clone failed (%w) and restore also failed (%v); backup at %s", actualStateDir.Path(), err, restoreErr, backupPath)
 				}
