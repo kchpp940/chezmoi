@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"runtime"
 	"time"
+
+	"chezmoi.io/chezmoi/v2/internal/chezmoigit"
 )
 
 // A TargetStateEntry represents the state of an entry in the target state.
@@ -95,6 +97,11 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 	actualStateEntry ActualStateEntry,
 ) (bool, error) {
 	if t.reclone {
+		if actualStateDir, ok := actualStateEntry.(*ActualStateDir); ok {
+			if err := checkGitRepoCleanForReclone(actualStateDir.Path()); err != nil {
+				return false, err
+			}
+		}
 		if err := actualStateEntry.Remove(system); err != nil {
 			return false, err
 		}
@@ -549,4 +556,51 @@ func (t *TargetStateSymlink) SkipApply(persistentState PersistentState, targetAb
 // SourceAttr implements TargetStateEntry.SourceAttr.
 func (t *TargetStateSymlink) SourceAttr() SourceAttr {
 	return t.sourceAttr
+}
+
+type ErrGitRepoDirty struct {
+	Path    AbsPath
+	Details string
+}
+
+func (e *ErrGitRepoDirty) Error() string {
+	return fmt.Sprintf("%s: cannot reclone git-repo external: %s; resolve local changes or remove the directory manually and re-run chezmoi apply", e.Path, e.Details)
+}
+
+func checkGitRepoCleanForReclone(dirAbsPath AbsPath) error {
+	cmd := exec.Command("git", "status", "--porcelain=v2")
+	cmd.Dir = dirAbsPath.String()
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("%s: cannot check git status for reclone: %w", dirAbsPath, err)
+	}
+	status, err := chezmoigit.ParseStatusPorcelainV2(output)
+	if err != nil {
+		return fmt.Errorf("%s: cannot parse git status for reclone: %w", dirAbsPath, err)
+	}
+	if len(status.Ordinary) > 0 {
+		return &ErrGitRepoDirty{
+			Path:    dirAbsPath,
+			Details: "has modified files",
+		}
+	}
+	if len(status.Unmerged) > 0 {
+		return &ErrGitRepoDirty{
+			Path:    dirAbsPath,
+			Details: "has unmerged files",
+		}
+	}
+	if len(status.RenamedOrCopied) > 0 {
+		return &ErrGitRepoDirty{
+			Path:    dirAbsPath,
+			Details: "has renamed or copied files",
+		}
+	}
+	if len(status.Untracked) > 0 {
+		return &ErrGitRepoDirty{
+			Path:    dirAbsPath,
+			Details: "has untracked files",
+		}
+	}
+	return nil
 }
