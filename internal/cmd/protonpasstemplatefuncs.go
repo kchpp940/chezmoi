@@ -13,6 +13,13 @@ type protonPassConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *protonPassConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) protonPassTemplateFunc(item string) string {
 	args := []string{"item", "view", item}
 	return string(mustValue(c.protonPassOutput(args)))
@@ -27,7 +34,7 @@ func (c *Config) protonPassJSONTemplateFunc(item string) any {
 }
 
 func (c *Config) protonPassOutput(args []string) ([]byte, error) {
-	key := newSecretCacheKey(args...)
+	key := c.ProtonPass.secretCacheKey(args...)
 	if data, ok := c.ProtonPass.outputCache[key]; ok {
 		return data, nil
 	}

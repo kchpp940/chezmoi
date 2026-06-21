@@ -18,6 +18,13 @@ type ejsonConfig struct {
 	cache  map[ejsonCacheKey]any
 }
 
+func (c *ejsonConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 2+len(extraParts))
+	parts = append(parts, c.KeyDir, c.Key)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) ejsonDecryptWithKeyTemplateFunc(filePath, key string) any {
 	cacheKey := ejsonCacheKey{
 		filePath: filePath,

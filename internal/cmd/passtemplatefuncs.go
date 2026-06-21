@@ -13,6 +13,13 @@ type passConfig struct {
 	cache   map[string][]byte
 }
 
+func (c *passConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) passTemplateFunc(id string) string {
 	output := mustValue(c.passOutput(id))
 	firstLine, _, _ := bytes.Cut(output, []byte{'\n'})
@@ -36,7 +43,7 @@ func (c *Config) passRawTemplateFunc(id string) string {
 }
 
 func (c *Config) passOutput(id string) ([]byte, error) {
-	cacheKey := newSecretCacheKey(c.Pass.Command, "show", id)
+	cacheKey := c.Pass.secretCacheKey("show", id)
 	if output, ok := c.Pass.cache[cacheKey]; ok {
 		return output, nil
 	}

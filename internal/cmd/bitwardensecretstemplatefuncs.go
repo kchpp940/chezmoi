@@ -14,6 +14,13 @@ type bitwardenSecretsConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *bitwardenSecretsConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ...string) any {
 	args := []string{"secret", "get", secretID}
 	switch len(additionalArgs) {
@@ -31,7 +38,7 @@ func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ..
 }
 
 func (c *Config) bitwardenSecretsOutput(args []string) ([]byte, error) {
-	key := newSecretCacheKey(args...)
+	key := c.BitwardenSecrets.secretCacheKey(args...)
 	if data, ok := c.BitwardenSecrets.outputCache[key]; ok {
 		return data, nil
 	}

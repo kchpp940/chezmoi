@@ -53,6 +53,18 @@ type onepasswordConfig struct {
 	modeChecked   bool
 }
 
+func (c *onepasswordConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 3+len(extraParts))
+	parts = append(parts, c.Command, string(c.Mode))
+	if c.Prompt {
+		parts = append(parts, "prompt=true")
+	} else {
+		parts = append(parts, "prompt=false")
+	}
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 type onepasswordArgs struct {
 	item    string
 	vault   string
@@ -186,7 +198,7 @@ func (c *Config) onepasswordItem(userArgs []string) (*onepasswordItem, error) {
 }
 
 func (c *Config) onepasswordOutput(args *onepasswordArgs, withSessionToken withSessionTokenType) ([]byte, error) {
-	key := newSecretCacheKey(args.args...)
+	key := c.Onepassword.secretCacheKey(args.args...)
 	if output, ok := c.Onepassword.outputCache[key]; ok {
 		return output, nil
 	}

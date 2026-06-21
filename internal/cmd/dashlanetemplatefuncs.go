@@ -15,6 +15,14 @@ type dashlaneConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *dashlaneConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(c.Args)+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, c.Args...)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) dashlaneNoteTemplateFunc(filter string) any {
 	output := mustValue(c.dashlaneOutput("note", filter))
 	return string(output)
@@ -30,13 +38,13 @@ func (c *Config) dashlanePasswordTemplateFunc(filter string) any {
 }
 
 func (c *Config) dashlaneOutput(args ...string) ([]byte, error) {
-	fullArgs := append(slices.Clone(c.Dashlane.Args), args...)
-	key := newSecretCacheKey(fullArgs...)
+	key := c.Dashlane.secretCacheKey(args...)
 	if output, ok := c.Dashlane.outputCache[key]; ok {
 		return output, nil
 	}
 
 	name := c.Dashlane.Command
+	fullArgs := append(slices.Clone(c.Dashlane.Args), args...)
 	cmd := exec.Command(name, fullArgs...)
 	cmd.Stderr = os.Stderr
 	output, err := chezmoilog.LogCmdOutput(c.logger, cmd)

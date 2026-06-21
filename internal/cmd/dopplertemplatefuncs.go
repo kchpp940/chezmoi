@@ -18,6 +18,14 @@ type dopplerConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *dopplerConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 3+len(c.Args)+len(extraParts))
+	parts = append(parts, c.Command, c.Project, c.Config)
+	parts = append(parts, c.Args...)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) dopplerTemplateFunc(key string, additionalArgs ...string) any {
 	if len(additionalArgs) > 2 {
 		// Add one to the number of received arguments as the key
@@ -67,12 +75,12 @@ func (c *Config) appendDopplerAdditionalArgs(args, additionalArgs []string) []st
 }
 
 func (c *Config) dopplerOutput(args []string) ([]byte, error) {
-	args = append(slices.Clone(c.Doppler.Args), args...)
-	key := newSecretCacheKey(args...)
+	key := c.Doppler.secretCacheKey(args...)
 	if data, ok := c.Doppler.outputCache[key]; ok {
 		return data, nil
 	}
-	cmd := exec.Command(c.Doppler.Command, args...)
+	fullArgs := append(slices.Clone(c.Doppler.Args), args...)
+	cmd := exec.Command(c.Doppler.Command, fullArgs...)
 	// Always run the doppler command in the destination path because doppler uses
 	// relative paths to find its .doppler.json config file.
 	cmd.Dir = c.DestDirAbsPath.String()

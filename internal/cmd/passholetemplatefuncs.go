@@ -20,6 +20,19 @@ type passholeConfig struct {
 	password string
 }
 
+func (c *passholeConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 2+len(c.Args)+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, c.Args...)
+	if c.Prompt {
+		parts = append(parts, "prompt=true", "--password", "-")
+	} else {
+		parts = append(parts, "prompt=false")
+	}
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 var passholeMinVersion = semver.Version{Major: 1, Minor: 10, Patch: 0}
 
 func (c *Config) passholeTemplateFunc(path, field string) string {
@@ -35,7 +48,7 @@ func (c *Config) passholeTemplateFunc(path, field string) string {
 	}
 	args = append(args, "show", "--field", field, path)
 
-	cacheKey := newSecretCacheKey(append([]string{c.Passhole.Command}, args...)...)
+	cacheKey := c.Passhole.secretCacheKey("show", "--field", field, path)
 	if value, ok := c.Passhole.cache[cacheKey]; ok {
 		return value
 	}

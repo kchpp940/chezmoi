@@ -13,8 +13,15 @@ type vaultConfig struct {
 	cache   map[string]any
 }
 
+func (c *vaultConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) vaultTemplateFunc(key string) any {
-	cacheKey := newSecretCacheKey(c.Vault.Command, "kv", "get", "-format=json", key)
+	cacheKey := c.Vault.secretCacheKey("kv", "get", "-format=json", key)
 	if data, ok := c.Vault.cache[cacheKey]; ok {
 		return data
 	}

@@ -46,6 +46,13 @@ type gopassConfig struct {
 	rawCache      map[gopassCacheKey][]byte
 }
 
+func (c *gopassConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 2+len(extraParts))
+	parts = append(parts, c.Command, string(c.Mode))
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) gopassTemplateFunc(id string) string {
 	cacheKey := gopassCacheKey{
 		command: c.Gopass.Command,

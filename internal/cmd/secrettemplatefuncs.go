@@ -11,6 +11,16 @@ import (
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
 
+// secretCacheKeyer is the interface implemented by secret provider configs
+// that need cache isolation based on their configuration context.
+// Implementations MUST explicitly list ALL configuration fields that affect
+// secret retrieval (e.g., command, region, profile, vault, account, args, etc.).
+// When adding new configuration fields to a provider, update this method
+// to include them if they affect the secret retrieval result.
+type secretCacheKeyer interface {
+	secretCacheKey(extraParts ...string) string
+}
+
 func newSecretCacheKey(parts ...string) string {
 	var buf bytes.Buffer
 	for _, part := range parts {
@@ -26,6 +36,14 @@ type secretConfig struct {
 	cache   map[string][]byte
 }
 
+func (c *secretConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(c.Args)+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, c.Args...)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) secretTemplateFunc(args ...string) string {
 	return string(bytes.TrimSpace(mustValue(c.secretOutput(args))))
 }
@@ -38,12 +56,12 @@ func (c *Config) secretJSONTemplateFunc(args ...string) any {
 }
 
 func (c *Config) secretOutput(args []string) ([]byte, error) {
-	fullArgs := append(slices.Clone(c.Secret.Args), args...)
-	key := newSecretCacheKey(append([]string{c.Secret.Command}, fullArgs...)...)
+	key := c.Secret.secretCacheKey(args...)
 	if output, ok := c.Secret.cache[key]; ok {
 		return output, nil
 	}
 
+	fullArgs := append(slices.Clone(c.Secret.Args), args...)
 	cmd := exec.Command(c.Secret.Command, fullArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stderr = os.Stderr

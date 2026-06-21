@@ -16,6 +16,17 @@ type keeperConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *keeperConfig) secretCacheKey(extraParts ...string) string {
+	// NOTE: Keeper's parameter order is different from other providers:
+	// command args come first, then config Args.
+	// See keeperOutput: fullArgs := append(slices.Clone(args), c.Keeper.Args...)
+	parts := make([]string, 0, 1+len(extraParts)+len(c.Args))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	parts = append(parts, c.Args...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) keeperTemplateFunc(record string) map[string]any {
 	output := mustValue(c.keeperOutput([]string{"get", "--format=json", record}))
 	var result map[string]any
@@ -47,13 +58,13 @@ func (c *Config) keeperFindPasswordTemplateFunc(record string) string {
 }
 
 func (c *Config) keeperOutput(args []string) ([]byte, error) {
-	fullArgs := append(slices.Clone(args), c.Keeper.Args...)
-	key := newSecretCacheKey(fullArgs...)
+	key := c.Keeper.secretCacheKey(args...)
 	if data, ok := c.Keeper.outputCache[key]; ok {
 		return data, nil
 	}
 
 	name := c.Keeper.Command
+	fullArgs := append(slices.Clone(args), c.Keeper.Args...)
 	cmd := exec.Command(name, fullArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stderr = os.Stderr

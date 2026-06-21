@@ -25,6 +25,13 @@ type awsSecretsManagerConfig struct {
 	jsonCache map[awsSecretsManagerCacheKey]map[string]any
 }
 
+func (c *awsSecretsManagerConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 2+len(extraParts))
+	parts = append(parts, c.Region, c.Profile)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func awsSecretsManagerSvcCacheKey(region, profile string) string {
 	return newSecretCacheKey(region, profile)
 }

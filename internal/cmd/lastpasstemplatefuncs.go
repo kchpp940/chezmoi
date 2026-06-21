@@ -27,6 +27,13 @@ type lastpassConfig struct {
 	cache   map[string][]map[string]any
 }
 
+func (c *lastpassConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) lastpassTemplateFunc(id string) []map[string]any {
 	data := mustValue(c.lastpassData(id))
 	for _, d := range data {
@@ -42,7 +49,7 @@ func (c *Config) lastpassRawTemplateFunc(id string) []map[string]any {
 }
 
 func (c *Config) lastpassData(id string) ([]map[string]any, error) {
-	cacheKey := newSecretCacheKey(c.Lastpass.Command, "show", "--json", id)
+	cacheKey := c.Lastpass.secretCacheKey("show", "--json", id)
 	if data, ok := c.Lastpass.cache[cacheKey]; ok {
 		return data, nil
 	}

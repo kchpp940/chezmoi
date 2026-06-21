@@ -56,6 +56,19 @@ type keepassxcConfig struct {
 	password        string
 }
 
+func (c *keepassxcConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 4+len(c.Args)+len(extraParts))
+	parts = append(parts, c.Command, c.Database.String(), string(c.Mode))
+	parts = append(parts, c.Args...)
+	if c.Prompt {
+		parts = append(parts, "prompt=true")
+	} else {
+		parts = append(parts, "prompt=false")
+	}
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 var (
 	keepassxcMinVersion = semver.Version{Major: 2, Minor: 7, Patch: 0}
 

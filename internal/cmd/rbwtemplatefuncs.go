@@ -15,6 +15,13 @@ type rbwConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *rbwConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 var rbwMinVersion = semver.Version{Major: 1, Minor: 7, Patch: 0}
 
 func (c *Config) rbwFieldsTemplateFunc(name string, extraArgs ...string) map[string]any {
@@ -42,7 +49,7 @@ func (c *Config) rbwTemplateFunc(name string, extraArgs ...string) map[string]an
 }
 
 func (c *Config) rbwOutput(args []string) ([]byte, error) {
-	key := newSecretCacheKey(args...)
+	key := c.RBW.secretCacheKey(args...)
 	if data, ok := c.RBW.outputCache[key]; ok {
 		return data, nil
 	}

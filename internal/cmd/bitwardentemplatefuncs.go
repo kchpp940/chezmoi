@@ -17,6 +17,14 @@ type bitwardenConfig struct {
 	outputCache map[string][]byte
 }
 
+func (c *bitwardenConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 2+len(extraParts))
+	parts = append(parts, c.Command)
+	parts = append(parts, c.Unlock.String())
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (c *Config) bitwardenAttachmentTemplateFunc(name, itemID string) string {
 	must(c.bitwardenMaybeUnlock())
 	return string(mustValue(c.bitwardenOutput([]string{"get", "attachment", name, "--itemid", itemID, "--raw"})))
@@ -84,7 +92,7 @@ func (c *Config) bitwardenMaybeUnlock() error {
 }
 
 func (c *Config) bitwardenOutput(args []string) ([]byte, error) {
-	key := newSecretCacheKey(args...)
+	key := c.Bitwarden.secretCacheKey(args...)
 	if data, ok := c.Bitwarden.outputCache[key]; ok {
 		return data, nil
 	}
