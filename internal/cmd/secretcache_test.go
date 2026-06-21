@@ -341,4 +341,21 @@ func TestSecretCacheKeyerInterface(t *testing.T) {
 		c2 := &rbwConfig{Command: "rbw2"}
 		assert.NotEqual(t, c1.secretCacheKey("get", "name1"), c2.secretCacheKey("get", "name1"))
 	})
+
+	t.Run("azurekeyvault_defaultvault_isolation", func(t *testing.T) {
+		c1 := &azureKeyVaultConfig{DefaultVault: "vault1"}
+		c2 := &azureKeyVaultConfig{DefaultVault: "vault2"}
+		assert.NotEqual(t, c1.secretCacheKey("secret1"), c2.secretCacheKey("secret1"))
+	})
+
+	t.Run("azurekeyvault_vaultname_isolation", func(t *testing.T) {
+		c := &azureKeyVaultConfig{DefaultVault: "default-vault"}
+		assert.NotEqual(t, c.secretCacheKey("vault1", "secret1"), c.secretCacheKey("vault2", "secret1"))
+	})
+
+	t.Run("keyring_fixed_context", func(t *testing.T) {
+		c := &keyringData{}
+		assert.NotEqual(t, c.secretCacheKey("service1", "user1"), c.secretCacheKey("service2", "user1"))
+		assert.NotEqual(t, c.secretCacheKey("service1", "user1"), c.secretCacheKey("service1", "user2"))
+	})
 }

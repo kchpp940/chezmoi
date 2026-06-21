@@ -24,6 +24,13 @@ type azureKeyVaultConfig struct {
 	cred         *azidentity.DefaultAzureCredential
 }
 
+func (c *azureKeyVaultConfig) secretCacheKey(extraParts ...string) string {
+	parts := make([]string, 0, 1+len(extraParts))
+	parts = append(parts, c.DefaultVault)
+	parts = append(parts, extraParts...)
+	return newSecretCacheKey(parts...)
+}
+
 func (a *azureKeyVaultConfig) GetSecret(secretName, vaultName string) string {
 	if a.vaults == nil {
 		a.vaults = make(map[string]*azureKeyVault)
@@ -33,7 +40,8 @@ func (a *azureKeyVaultConfig) GetSecret(secretName, vaultName string) string {
 		a.vaults[vaultName] = &azureKeyVault{}
 	}
 
-	if secret, ok := a.vaults[vaultName].cache[secretName]; ok {
+	cacheKey := a.secretCacheKey(vaultName, secretName)
+	if secret, ok := a.vaults[vaultName].cache[cacheKey]; ok {
 		return secret
 	}
 
@@ -51,7 +59,7 @@ func (a *azureKeyVaultConfig) GetSecret(secretName, vaultName string) string {
 		a.vaults[vaultName].cache = make(map[string]string)
 	}
 
-	a.vaults[vaultName].cache[secretName] = *resp.Value
+	a.vaults[vaultName].cache[cacheKey] = *resp.Value
 
 	return *resp.Value
 }
