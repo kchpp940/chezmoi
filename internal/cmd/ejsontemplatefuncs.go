@@ -25,6 +25,10 @@ func (c *ejsonConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *ejsonConfig) resetSecretCache() {
+	c.cache = nil
+}
+
 func (c *Config) ejsonDecryptWithKeyTemplateFunc(filePath, key string) any {
 	cacheKey := ejsonCacheKey{
 		filePath: filePath,

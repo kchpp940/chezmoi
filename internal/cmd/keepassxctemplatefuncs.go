@@ -69,6 +69,16 @@ func (c *keepassxcConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *keepassxcConfig) resetSecretCache() {
+	c.cmd = nil
+	c.console = nil
+	c.promptStr = ""
+	c.cache = nil
+	c.attachmentCache = nil
+	c.attributeCache = nil
+	c.password = ""
+}
+
 var (
 	keepassxcMinVersion = semver.Version{Major: 2, Minor: 7, Patch: 0}
 

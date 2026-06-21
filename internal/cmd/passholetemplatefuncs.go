@@ -33,6 +33,11 @@ func (c *passholeConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *passholeConfig) resetSecretCache() {
+	c.cache = nil
+	c.password = ""
+}
+
 var passholeMinVersion = semver.Version{Major: 1, Minor: 10, Patch: 0}
 
 func (c *Config) passholeTemplateFunc(path, field string) string {

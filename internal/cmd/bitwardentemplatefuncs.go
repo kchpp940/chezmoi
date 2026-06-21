@@ -25,6 +25,11 @@ func (c *bitwardenConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *bitwardenConfig) resetSecretCache() {
+	c.session = ""
+	c.outputCache = nil
+}
+
 func (c *Config) bitwardenAttachmentTemplateFunc(name, itemID string) string {
 	must(c.bitwardenMaybeUnlock())
 	return string(mustValue(c.bitwardenOutput([]string{"get", "attachment", name, "--itemid", itemID, "--raw"})))

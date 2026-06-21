@@ -21,6 +21,10 @@ func (c *bitwardenSecretsConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *bitwardenSecretsConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ...string) any {
 	args := []string{"secret", "get", secretID}
 	switch len(additionalArgs) {

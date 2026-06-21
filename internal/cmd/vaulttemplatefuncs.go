@@ -20,6 +20,10 @@ func (c *vaultConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *vaultConfig) resetSecretCache() {
+	c.cache = nil
+}
+
 func (c *Config) vaultTemplateFunc(key string) any {
 	cacheKey := c.Vault.secretCacheKey("kv", "get", "-format=json", key)
 	if data, ok := c.Vault.cache[cacheKey]; ok {

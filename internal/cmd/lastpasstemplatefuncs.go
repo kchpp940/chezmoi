@@ -34,6 +34,10 @@ func (c *lastpassConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *lastpassConfig) resetSecretCache() {
+	c.cache = nil
+}
+
 func (c *Config) lastpassTemplateFunc(id string) []map[string]any {
 	data := mustValue(c.lastpassData(id))
 	for _, d := range data {

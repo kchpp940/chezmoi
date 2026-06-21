@@ -20,6 +20,10 @@ func (c *passConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *passConfig) resetSecretCache() {
+	c.cache = nil
+}
+
 func (c *Config) passTemplateFunc(id string) string {
 	output := mustValue(c.passOutput(id))
 	firstLine, _, _ := bytes.Cut(output, []byte{'\n'})

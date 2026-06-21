@@ -65,6 +65,14 @@ func (c *onepasswordConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *onepasswordConfig) resetSecretCache() {
+	c.outputCache = nil
+	c.sessionTokens = nil
+	c.accountMap = nil
+	c.accountMapErr = nil
+	c.modeChecked = false
+}
+
 type onepasswordArgs struct {
 	item    string
 	vault   string

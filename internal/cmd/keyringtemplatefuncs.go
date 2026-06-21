@@ -18,9 +18,11 @@ type keyringData struct {
 }
 
 func (c *keyringData) secretCacheKey(extraParts ...string) string {
-	// keyring 没有额外配置上下文，使用系统 keyring 的全局配置
-	// 显式声明为固定上下文，避免游离在统一规范之外
 	return newSecretCacheKey(extraParts...)
+}
+
+func (c *keyringData) resetSecretCache() {
+	c.cache = nil
 }
 
 func (c *Config) keyringTemplateFunc(service, user string) string {

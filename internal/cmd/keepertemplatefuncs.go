@@ -27,6 +27,10 @@ func (c *keeperConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *keeperConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 func (c *Config) keeperTemplateFunc(record string) map[string]any {
 	output := mustValue(c.keeperOutput([]string{"get", "--format=json", record}))
 	var result map[string]any

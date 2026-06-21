@@ -31,6 +31,11 @@ func (c *azureKeyVaultConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *azureKeyVaultConfig) resetSecretCache() {
+	c.vaults = nil
+	c.cred = nil
+}
+
 func (a *azureKeyVaultConfig) GetSecret(secretName, vaultName string) string {
 	if a.vaults == nil {
 		a.vaults = make(map[string]*azureKeyVault)

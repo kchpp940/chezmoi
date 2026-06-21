@@ -23,6 +23,10 @@ func (c *dashlaneConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *dashlaneConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 func (c *Config) dashlaneNoteTemplateFunc(filter string) any {
 	output := mustValue(c.dashlaneOutput("note", filter))
 	return string(output)

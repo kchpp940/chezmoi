@@ -22,6 +22,10 @@ func (c *rbwConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *rbwConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 var rbwMinVersion = semver.Version{Major: 1, Minor: 7, Patch: 0}
 
 func (c *Config) rbwFieldsTemplateFunc(name string, extraArgs ...string) map[string]any {

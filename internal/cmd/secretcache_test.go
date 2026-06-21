@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoi"
 )
@@ -104,33 +105,197 @@ func TestSecretCacheKeyIsolation(t *testing.T) {
 func TestClearSecretCaches(t *testing.T) {
 	config := &Config{}
 
+	config.AWSSecretsManager.svcs = map[string]*secretsmanager.Client{
+		"key": {},
+	}
 	config.AWSSecretsManager.cache = map[awsSecretsManagerCacheKey]string{
 		{region: "us-east-1", profile: "default", arn: "test"}: "secret1",
 	}
 	config.AWSSecretsManager.jsonCache = map[awsSecretsManagerCacheKey]map[string]any{
 		{region: "us-east-1", profile: "default", arn: "test"}: {"key": "val"},
 	}
+
+	config.AzureKeyVault.vaults = map[string]*azureKeyVault{
+		"vault1": {},
+	}
+
+	config.Bitwarden.session = "session1"
+	config.Bitwarden.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.BitwardenSecrets.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.Dashlane.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.Doppler.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
 	config.Ejson.cache = map[ejsonCacheKey]any{
 		{filePath: "/test.ejson", keyDir: "/keys", key: "k1"}: "val1",
+	}
+
+	config.Gopass.passwordCache = map[string][]byte{
+		"/file": []byte("pass"),
 	}
 	config.Gopass.cache = map[gopassCacheKey]string{
 		{command: "gopass", mode: gopassModeDefault, id: "test"}: "password1",
 	}
+	config.Gopass.rawCache = map[gopassCacheKey][]byte{
+		{command: "gopass", mode: gopassModeDefault, id: "test"}: []byte("raw"),
+	}
+
 	config.Keepassxc.cache = map[keepassxcCacheKey]map[string]string{
 		{database: "/db.kdbx", mode: keepassxcModeBuiltin, entry: "test"}: {"Password": "pass1"},
 	}
+	config.Keepassxc.attachmentCache = map[keepassxcCacheKey]map[string]string{
+		{database: "/db.kdbx", mode: keepassxcModeBuiltin, entry: "test"}: {"att1": "val1"},
+	}
+	config.Keepassxc.attributeCache = map[keepassxcAttributeCacheKey]string{
+		{database: "/db.kdbx", mode: keepassxcModeBuiltin, entry: "test", attribute: "Notes"}: "note1",
+	}
+	config.Keepassxc.password = "password"
+
+	config.Keeper.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.Lastpass.cache = map[string][]map[string]any{
+		"key": {{"data": "val"}},
+	}
+
+	config.Onepassword.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+	config.Onepassword.sessionTokens = map[string]string{
+		"account1": "token1",
+	}
+	config.Onepassword.accountMap = map[string]string{
+		"user": "uuid",
+	}
+	config.Onepassword.modeChecked = true
+
+	config.Pass.cache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.Passhole.cache = map[string]string{
+		"key": "value",
+	}
+	config.Passhole.password = "password"
+
+	config.ProtonPass.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
+	config.RBW.outputCache = map[string][]byte{
+		"key": []byte("value"),
+	}
+
 	config.Secret.cache = map[string][]byte{
 		newSecretCacheKey("cmd", "arg1"): []byte("output1"),
 	}
 
+	config.Vault.cache = map[string]any{
+		"key": "value",
+	}
+
+	config.keyring.cache = map[string]string{
+		newSecretCacheKey("service", "user"): "password",
+	}
+
 	config.clearSecretCaches()
 
+	// Verify all caches and state are cleared
+	assert.Equal(t, nil, config.AWSSecretsManager.svcs)
 	assert.Equal(t, nil, config.AWSSecretsManager.cache)
 	assert.Equal(t, nil, config.AWSSecretsManager.jsonCache)
+
+	assert.Equal(t, nil, config.AzureKeyVault.vaults)
+	assert.Equal(t, nil, config.AzureKeyVault.cred)
+
+	assert.Equal(t, "", config.Bitwarden.session)
+	assert.Equal(t, nil, config.Bitwarden.outputCache)
+
+	assert.Equal(t, nil, config.BitwardenSecrets.outputCache)
+
+	assert.Equal(t, nil, config.Dashlane.outputCache)
+
+	assert.Equal(t, nil, config.Doppler.outputCache)
+
 	assert.Equal(t, nil, config.Ejson.cache)
+
+	assert.Equal(t, nil, config.Gopass.ctx)
+	assert.Equal(t, nil, config.Gopass.client)
+	assert.Equal(t, nil, config.Gopass.clientErr)
+	assert.Equal(t, nil, config.Gopass.passwordCache)
 	assert.Equal(t, nil, config.Gopass.cache)
+	assert.Equal(t, nil, config.Gopass.rawCache)
+
+	assert.Equal(t, nil, config.Keepassxc.cmd)
+	assert.Equal(t, nil, config.Keepassxc.console)
+	assert.Equal(t, "", config.Keepassxc.promptStr)
 	assert.Equal(t, nil, config.Keepassxc.cache)
+	assert.Equal(t, nil, config.Keepassxc.attachmentCache)
+	assert.Equal(t, nil, config.Keepassxc.attributeCache)
+	assert.Equal(t, "", config.Keepassxc.password)
+
+	assert.Equal(t, nil, config.Keeper.outputCache)
+
+	assert.Equal(t, nil, config.Lastpass.cache)
+
+	assert.Equal(t, nil, config.Onepassword.outputCache)
+	assert.Equal(t, nil, config.Onepassword.sessionTokens)
+	assert.Equal(t, nil, config.Onepassword.accountMap)
+	assert.Equal(t, nil, config.Onepassword.accountMapErr)
+	assert.Equal(t, false, config.Onepassword.modeChecked)
+
+	assert.Equal(t, nil, config.Pass.cache)
+
+	assert.Equal(t, nil, config.Passhole.cache)
+	assert.Equal(t, "", config.Passhole.password)
+
+	assert.Equal(t, nil, config.ProtonPass.outputCache)
+
+	assert.Equal(t, nil, config.RBW.outputCache)
+
 	assert.Equal(t, nil, config.Secret.cache)
+
+	assert.Equal(t, nil, config.Vault.cache)
+
+	assert.Equal(t, nil, config.keyring.cache)
+}
+
+// TestSecretCacheResetterInterface verifies that all providers implement the
+// secretCacheResetter interface and their resetSecretCache() method clears all
+// state fields correctly.
+func TestSecretCacheResetterInterface(t *testing.T) {
+	_ = []secretCacheResetter{
+		(*secretConfig)(nil),
+		(*awsSecretsManagerConfig)(nil),
+		(*azureKeyVaultConfig)(nil),
+		(*bitwardenConfig)(nil),
+		(*bitwardenSecretsConfig)(nil),
+		(*dashlaneConfig)(nil),
+		(*dopplerConfig)(nil),
+		(*ejsonConfig)(nil),
+		(*gopassConfig)(nil),
+		(*keepassxcConfig)(nil),
+		(*keeperConfig)(nil),
+		(*lastpassConfig)(nil),
+		(*onepasswordConfig)(nil),
+		(*passConfig)(nil),
+		(*passholeConfig)(nil),
+		(*protonPassConfig)(nil),
+		(*rbwConfig)(nil),
+		(*vaultConfig)(nil),
+		(*keyringData)(nil),
+	}
 }
 
 func TestSecretCacheKeyerInterface(t *testing.T) {

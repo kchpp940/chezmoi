@@ -26,6 +26,10 @@ func (c *dopplerConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *dopplerConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 func (c *Config) dopplerTemplateFunc(key string, additionalArgs ...string) any {
 	if len(additionalArgs) > 2 {
 		// Add one to the number of received arguments as the key

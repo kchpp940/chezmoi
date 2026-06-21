@@ -32,6 +32,12 @@ func (c *awsSecretsManagerConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *awsSecretsManagerConfig) resetSecretCache() {
+	c.svcs = nil
+	c.cache = nil
+	c.jsonCache = nil
+}
+
 func awsSecretsManagerSvcCacheKey(region, profile string) string {
 	return newSecretCacheKey(region, profile)
 }

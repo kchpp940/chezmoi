@@ -20,6 +20,10 @@ func (c *protonPassConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *protonPassConfig) resetSecretCache() {
+	c.outputCache = nil
+}
+
 func (c *Config) protonPassTemplateFunc(item string) string {
 	args := []string{"item", "view", item}
 	return string(mustValue(c.protonPassOutput(args)))

@@ -21,6 +21,19 @@ type secretCacheKeyer interface {
 	secretCacheKey(extraParts ...string) string
 }
 
+// secretCacheResetter is the interface implemented by secret provider configs
+// that need to reset their cache and client state on config reload.
+// Implementations MUST reset ALL runtime state including:
+//   - Output caches (cache, outputCache, jsonCache, etc.)
+//   - Client connections (svcs, client, cred, console, cmd, etc.)
+//   - Session tokens and credentials (session, password, sessionTokens, etc.)
+//   - Lazy-initialized state flags (modeChecked, accountMap, etc.)
+//
+// When adding new state fields to a provider, add them to this method.
+type secretCacheResetter interface {
+	resetSecretCache()
+}
+
 func newSecretCacheKey(parts ...string) string {
 	var buf bytes.Buffer
 	for _, part := range parts {
@@ -42,6 +55,10 @@ func (c *secretConfig) secretCacheKey(extraParts ...string) string {
 	parts = append(parts, c.Args...)
 	parts = append(parts, extraParts...)
 	return newSecretCacheKey(parts...)
+}
+
+func (c *secretConfig) resetSecretCache() {
+	c.cache = nil
 }
 
 func (c *Config) secretTemplateFunc(args ...string) string {
@@ -79,62 +96,35 @@ func (c *Config) secretOutput(args []string) ([]byte, error) {
 }
 
 func (c *Config) clearSecretCaches() {
-	c.AWSSecretsManager.svcs = nil
-	c.AWSSecretsManager.cache = nil
-	c.AWSSecretsManager.jsonCache = nil
+	// All secret providers implement secretCacheResetter.
+	// Their cleanup logic is localized in each provider's resetSecretCache() method.
+	// When adding a new provider, implement resetSecretCache() and add it here.
+	resetters := []secretCacheResetter{
+		&c.AWSSecretsManager,
+		&c.AzureKeyVault,
+		&c.Bitwarden,
+		&c.BitwardenSecrets,
+		&c.Dashlane,
+		&c.Doppler,
+		&c.Ejson,
+		&c.Gopass,
+		&c.Keepassxc,
+		&c.Keeper,
+		&c.Lastpass,
+		&c.Onepassword,
+		&c.Pass,
+		&c.Passhole,
+		&c.ProtonPass,
+		&c.RBW,
+		&c.Secret,
+		&c.Vault,
+		&c.keyring,
+	}
+	for _, resetter := range resetters {
+		resetter.resetSecretCache()
+	}
 
-	c.AzureKeyVault.vaults = nil
-	c.AzureKeyVault.cred = nil
-
-	c.Bitwarden.session = ""
-	c.Bitwarden.outputCache = nil
-
-	c.BitwardenSecrets.outputCache = nil
-
-	c.Dashlane.outputCache = nil
-
-	c.Doppler.outputCache = nil
-
-	c.Ejson.cache = nil
-
-	c.Gopass.ctx = nil
-	c.Gopass.client = nil
-	c.Gopass.clientErr = nil
-	c.Gopass.passwordCache = nil
-	c.Gopass.cache = nil
-	c.Gopass.rawCache = nil
-
-	c.Keepassxc.cmd = nil
-	c.Keepassxc.console = nil
-	c.Keepassxc.promptStr = ""
-	c.Keepassxc.cache = nil
-	c.Keepassxc.attachmentCache = nil
-	c.Keepassxc.attributeCache = nil
-	c.Keepassxc.password = ""
-
-	c.Keeper.outputCache = nil
-
-	c.Lastpass.cache = nil
-
-	c.Onepassword.outputCache = nil
-	c.Onepassword.sessionTokens = nil
-	c.Onepassword.accountMap = nil
-	c.Onepassword.accountMapErr = nil
-	c.Onepassword.modeChecked = false
-
-	c.Pass.cache = nil
-
-	c.Passhole.cache = nil
-	c.Passhole.password = ""
-
-	c.ProtonPass.outputCache = nil
-
-	c.RBW.outputCache = nil
-
-	c.Secret.cache = nil
-
-	c.Vault.cache = nil
-
+	// GitHub is not a secret provider but has similar lifecycle needs.
 	c.gitHub.client = nil
 	c.gitHub.clientErr = nil
 	c.gitHub.keysCache = nil
@@ -142,6 +132,4 @@ func (c *Config) clearSecretCaches() {
 	c.gitHub.latestReleaseCache = nil
 	c.gitHub.releasesCache = nil
 	c.gitHub.tagsCache = nil
-
-	c.keyring.cache = nil
 }

@@ -53,6 +53,15 @@ func (c *gopassConfig) secretCacheKey(extraParts ...string) string {
 	return newSecretCacheKey(parts...)
 }
 
+func (c *gopassConfig) resetSecretCache() {
+	c.ctx = nil
+	c.client = nil
+	c.clientErr = nil
+	c.passwordCache = nil
+	c.cache = nil
+	c.rawCache = nil
+}
+
 func (c *Config) gopassTemplateFunc(id string) string {
 	cacheKey := gopassCacheKey{
 		command: c.Gopass.Command,
