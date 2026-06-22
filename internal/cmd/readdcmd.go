@@ -76,9 +76,15 @@ func (c *Config) runReAddCmd(cmd *cobra.Command, args []string, sourceState *che
 		)
 	} else {
 		var err error
-		targetRelPaths, err = c.targetRelPaths(sourceState, args, targetRelPathsOptions{
-			recursive: c.reAdd.recursive,
-		})
+		if c.sourcePath {
+			targetRelPaths, err = c.targetRelPathsBySourcePath(sourceState, args, targetRelPathsOptions{
+				recursive: c.reAdd.recursive,
+			})
+		} else {
+			targetRelPaths, err = c.targetRelPaths(sourceState, args, targetRelPathsOptions{
+				recursive: c.reAdd.recursive,
+			})
+		}
 		if err != nil {
 			return err
 		}
