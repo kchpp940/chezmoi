@@ -722,25 +722,22 @@ func (c *Config) applyArgs(
 	switch {
 	case len(args) == 0:
 		targetRelPaths = sourceState.TargetRelPaths()
-		if options.parentDirs {
-			targetRelPaths = chezmoi.ParentRelPaths(targetRelPaths)
-		}
 	case c.sourcePath:
-		targetRelPaths, err = c.targetRelPathsBySourcePath(sourceState, args, targetRelPathsOptions{
-			recursive:  options.recursive,
-			parentDirs: options.parentDirs,
-		})
+		targetRelPaths, err = c.targetRelPathsBySourcePath(sourceState, args)
 		if err != nil {
 			return err
 		}
 	default:
 		targetRelPaths, err = c.targetRelPaths(sourceState, args, targetRelPathsOptions{
-			recursive:  options.recursive,
-			parentDirs: options.parentDirs,
+			recursive: options.recursive,
 		})
 		if err != nil {
 			return err
 		}
+	}
+
+	if options.parentDirs {
+		targetRelPaths = prependParentRelPaths(targetRelPaths)
 	}
 
 	applyOptions := chezmoi.ApplyOptions{
@@ -866,27 +863,44 @@ func (c *Config) colorAutoFunc() bool {
 }
 
 // createAndReloadConfigFile creates a config file if it there is a config file
-// template and reloads it.
+// template, reloads the configuration, and ensures all computed state is
+// consistent. The initialization order is strictly defined:
+//
+//  1. Reset all computed state (template data, source dir cache, source
+//     state, secret provider state)
+//  2. Refresh sourceDir, considering .chezmoiroot
+//  3. Execute config template and decode new configuration
+//  4. Recompute WorkingTreeAbsPath (sourceDir may have changed)
+//  5. Set up encryption from new config
+//  6. Rebuild template data with new config and sourceDir
+//  7. Set all environment variables (CHEZMOI_* + user-defined Env)
+//
+// This ensures that after --init, subsequent reads of sourceDir, template
+// data, encryption context, and secret providers all see the same
+// consistent state.
 func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
-	// Refresh the source directory, as there might be a .chezmoiroot file and
-	// the template data is set before .chezmoiroot is read.
-	sourceDirAbsPath, err := c.getSourceDirAbsPath(&getSourceDirAbsPathOptions{
+	c.resetComputedState()
+
+	if _, err := c.getSourceDirAbsPath(&getSourceDirAbsPathOptions{
 		refresh: true,
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
-	c.templateData.sourceDir = sourceDirAbsPath.String()
-	os.Setenv("CHEZMOI_SOURCE_DIR", sourceDirAbsPath.String())
 
-	// Find config template, execute it, and create config file.
 	configTemplate, err := c.findConfigTemplate()
 	if err != nil {
 		return err
 	}
 
 	if configTemplate == nil {
-		return c.persistentState.Delete(chezmoi.ConfigStateBucket, configStateKey)
+		if err := c.persistentState.Delete(chezmoi.ConfigStateBucket, configStateKey); err != nil {
+			return err
+		}
+		c.recomputeWorkingTreeAbsPath()
+		if err := c.setEncryption(); err != nil {
+			return err
+		}
+		return c.setAllEnvironmentVariables(cmd)
 	}
 
 	configFileContents, err := c.createConfigFileContents(configTemplate.targetRelPath, configTemplate.contents, cmd)
@@ -894,13 +908,11 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Validate the config file.
 	var configFile ConfigFile
 	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &configFile); err != nil {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
 
-	// Write the config.
 	configPath := c.init.configPath
 	if c.init.configPath.IsEmpty() {
 		if c.customConfigFileAbsPath.IsEmpty() {
@@ -926,15 +938,98 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Reload the config.
 	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &c.ConfigFile); err != nil {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
+
+	c.recomputeWorkingTreeAbsPath()
 
 	if err := c.setEncryption(); err != nil {
 		return err
 	}
 
+	return c.setAllEnvironmentVariables(cmd)
+}
+
+// recomputeWorkingTreeAbsPath recalculates WorkingTreeAbsPath based on the
+// current sourceDir. This must be called whenever sourceDir changes (e.g.
+// after processing .chezmoiroot during init).
+func (c *Config) recomputeWorkingTreeAbsPath() {
+	sourceDirAbsPath, err := c.getSourceDirAbsPath(nil)
+	if err != nil {
+		return
+	}
+	if sourceDirAbsPath.IsEmpty() {
+		return
+	}
+	c.WorkingTreeAbsPath = sourceDirAbsPath
+	for {
+		gitDirAbsPath := c.WorkingTreeAbsPath.JoinString(git.GitDirName)
+		if _, err := c.baseSystem.Stat(gitDirAbsPath); err == nil {
+			break
+		}
+		prevWorkingTreeDirAbsPath := c.WorkingTreeAbsPath
+		c.WorkingTreeAbsPath = c.WorkingTreeAbsPath.Dir()
+		if c.WorkingTreeAbsPath == c.homeDirAbsPath || c.WorkingTreeAbsPath.Len() >= prevWorkingTreeDirAbsPath.Len() {
+			c.WorkingTreeAbsPath = sourceDirAbsPath
+			break
+		}
+	}
+}
+
+// setAllEnvironmentVariables sets all environment variables in a
+// consistent order: first built-in CHEZMOI_* variables from the current
+// template data, then user-defined variables from Env/ScriptEnv config.
+// This should be called whenever template data or configuration changes.
+func (c *Config) setAllEnvironmentVariables(cmd *cobra.Command) error {
+	templateData := c.getTemplateData(cmd)
+	os.Setenv("CHEZMOI", "1")
+	for key, value := range map[string]string{
+		"ARCH":          templateData.arch,
+		"ARGS":          strings.Join(templateData.args, " "),
+		"CACHE_DIR":     templateData.cacheDir,
+		"COMMAND":       templateData.command,
+		"COMMAND_DIR":   templateData.commandDir,
+		"CONFIG_FILE":   templateData.configFile,
+		"DEST_DIR":      templateData.destDir,
+		"EXECUTABLE":    templateData.executable,
+		"FQDN_HOSTNAME": templateData.fqdnHostname,
+		"GID":           templateData.gid,
+		"GROUP":         templateData.group,
+		"HOME_DIR":      templateData.homeDir,
+		"HOSTNAME":      templateData.hostname,
+		"OS":            templateData.os,
+		"RAW_HOME_DIR":  templateData.rawHomeDir,
+		"SOURCE_DIR":    templateData.sourceDir,
+		"UID":           templateData.uid,
+		"USERNAME":      templateData.username,
+		"WORKING_TREE":  templateData.workingTree,
+	} {
+		os.Setenv("CHEZMOI_"+key, value)
+	}
+	if c.Verbose {
+		os.Setenv("CHEZMOI_VERBOSE", "1")
+	}
+	for groupKey, group := range map[string]map[string]any{
+		"KERNEL":          templateData.kernel,
+		"OS_RELEASE":      templateData.osRelease,
+		"VERSION":         templateData.version,
+		"WINDOWS_VERSION": templateData.windowsVersion,
+	} {
+		for key, value := range group {
+			key := "CHEZMOI_" + groupKey + "_" + camelCaseToUpperSnakeCase(key)
+			var valueStr string
+			switch value := value.(type) {
+			case string:
+				valueStr = value
+			case uint64:
+				valueStr = strconv.FormatUint(value, 10)
+			default:
+				panic(fmt.Errorf("%s has unexpected type %T", key, value))
+			}
+			os.Setenv(key, valueStr)
+		}
+	}
 	return c.setEnvironmentVariables()
 }
 
@@ -2497,56 +2592,7 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 		}
 	}
 
-	templateData := c.getTemplateData(cmd)
-	os.Setenv("CHEZMOI", "1")
-	for key, value := range map[string]string{
-		"ARCH":          templateData.arch,
-		"ARGS":          strings.Join(templateData.args, " "),
-		"CACHE_DIR":     templateData.cacheDir,
-		"COMMAND":       templateData.command,
-		"COMMAND_DIR":   templateData.commandDir,
-		"CONFIG_FILE":   templateData.configFile,
-		"DEST_DIR":      templateData.destDir,
-		"EXECUTABLE":    templateData.executable,
-		"FQDN_HOSTNAME": templateData.fqdnHostname,
-		"GID":           templateData.gid,
-		"GROUP":         templateData.group,
-		"HOME_DIR":      templateData.homeDir,
-		"HOSTNAME":      templateData.hostname,
-		"OS":            templateData.os,
-		"RAW_HOME_DIR":  templateData.rawHomeDir,
-		"SOURCE_DIR":    templateData.sourceDir,
-		"UID":           templateData.uid,
-		"USERNAME":      templateData.username,
-		"WORKING_TREE":  templateData.workingTree,
-	} {
-		os.Setenv("CHEZMOI_"+key, value)
-	}
-	if c.Verbose {
-		os.Setenv("CHEZMOI_VERBOSE", "1")
-	}
-	for groupKey, group := range map[string]map[string]any{
-		"KERNEL":          templateData.kernel,
-		"OS_RELEASE":      templateData.osRelease,
-		"VERSION":         templateData.version,
-		"WINDOWS_VERSION": templateData.windowsVersion,
-	} {
-		for key, value := range group {
-			key := "CHEZMOI_" + groupKey + "_" + camelCaseToUpperSnakeCase(key)
-			var valueStr string
-			switch value := value.(type) {
-			case string:
-				valueStr = value
-			case uint64:
-				valueStr = strconv.FormatUint(value, 10)
-			default:
-				panic(fmt.Errorf("%s has unexpected type %T", key, value))
-			}
-			os.Setenv(key, valueStr)
-		}
-	}
-
-	if err := c.setEnvironmentVariables(); err != nil {
+	if err := c.setAllEnvironmentVariables(cmd); err != nil {
 		return err
 	}
 
@@ -2715,6 +2761,91 @@ func (c *Config) readConfig(configFileAbsPath chezmoi.AbsPath) error {
 func (c *Config) resetSourceState() {
 	c.sourceState = nil
 	c.sourceStateErr = nil
+}
+
+// resetComputedState clears all computed state caches to ensure that config
+// changes during --init are fully reflected in subsequent operations. This
+// includes template data, source directory cache, source state, and all
+// secret provider caches and state.
+func (c *Config) resetComputedState() {
+	c.templateData = nil
+	c.sourceDirAbsPath = chezmoi.EmptyAbsPath
+	c.sourceDirAbsPathErr = nil
+	c.resetSourceState()
+	c.resetSecretProviderState()
+}
+
+// resetSecretProviderState clears all in-memory state and caches for secret
+// providers. This is needed when configuration changes during --init, as the
+// provider configuration (command paths, URLs, regions, etc.) may have
+// changed, making previously cached clients, sessions, or values invalid.
+func (c *Config) resetSecretProviderState() {
+	c.Vault.cache = nil
+
+	c.AWSSecretsManager.svc = nil
+	c.AWSSecretsManager.cache = nil
+	c.AWSSecretsManager.jsonCache = nil
+
+	c.AzureKeyVault.vaults = nil
+	c.AzureKeyVault.cred = nil
+
+	c.Bitwarden.session = ""
+	c.Bitwarden.outputCache = nil
+
+	c.BitwardenSecrets.outputCache = nil
+
+	c.Dashlane.cacheNote = nil
+	c.Dashlane.cachePassword = nil
+
+	c.Doppler.outputCache = nil
+
+	c.Ejson.cache = nil
+
+	c.Gopass.ctx = nil
+	c.Gopass.client = nil
+	c.Gopass.clientErr = nil
+	c.Gopass.passwordCache = nil
+	c.Gopass.cache = nil
+	c.Gopass.rawCache = nil
+
+	c.Keepassxc.cmd = nil
+	c.Keepassxc.console = nil
+	c.Keepassxc.promptStr = ""
+	c.Keepassxc.cache = nil
+	c.Keepassxc.attachmentCache = nil
+	c.Keepassxc.attributeCache = nil
+	c.Keepassxc.password = ""
+
+	c.Keeper.outputCache = nil
+
+	c.Lastpass.cache = nil
+
+	c.Onepassword.outputCache = nil
+	c.Onepassword.sessionTokens = nil
+	c.Onepassword.accountMap = nil
+	c.Onepassword.accountMapErr = nil
+	c.Onepassword.modeChecked = false
+
+	c.Pass.cache = nil
+
+	c.Passhole.cache = nil
+	c.Passhole.password = ""
+
+	c.ProtonPass.outputCache = nil
+
+	c.RBW.outputCache = nil
+
+	c.Secret.cache = nil
+
+	c.gitHub.client = nil
+	c.gitHub.clientErr = nil
+	c.gitHub.keysCache = nil
+	c.gitHub.versionReleaseCache = nil
+	c.gitHub.latestReleaseCache = nil
+	c.gitHub.releasesCache = nil
+	c.gitHub.tagsCache = nil
+
+	c.keyring.cache = nil
 }
 
 // run runs name with args in dir.
@@ -2939,7 +3070,6 @@ type targetRelPathsOptions struct {
 	mustBeInSourceState bool
 	mustNotBeExternal   bool
 	recursive           bool
-	parentDirs          bool
 }
 
 // targetRelPaths returns the target relative paths for each target path in
@@ -2959,23 +3089,66 @@ func (c *Config) targetRelPaths(
 		if err != nil {
 			return nil, err
 		}
+		sourceStateEntry := sourceState.Get(targetRelPath)
+		if sourceStateEntry == nil {
+			return nil, fmt.Errorf("%s: not managed", arg)
+		}
+		if options.mustBeInSourceState {
+			if _, ok := sourceStateEntry.(*chezmoi.SourceStateRemove); ok {
+				return nil, fmt.Errorf("%s: not in source state", arg)
+			}
+		}
+		if options.mustNotBeExternal {
+			targetStateEntry, err := sourceStateEntry.TargetStateEntry(c.destSystem, c.DestDirAbsPath.Join(targetRelPath))
+			if err != nil {
+				return nil, err
+			}
+			if targetStateEntry.SourceAttr().External {
+				return nil, fmt.Errorf("%s: is an external", arg)
+			}
+		}
 		targetRelPaths = append(targetRelPaths, targetRelPath)
+		if options.recursive {
+			parentRelPath := targetRelPath
+			// FIXME we should not call s.TargetRelPaths() here - risk of
+			// accidentally quadratic
+			for _, targetRelPath := range sourceState.TargetRelPaths() {
+				if _, err := targetRelPath.TrimDirPrefix(parentRelPath); err == nil {
+					targetRelPaths = append(targetRelPaths, targetRelPath)
+				}
+			}
+		}
 	}
-	return sourceState.TargetRelPathsForTargetPaths(targetRelPaths, chezmoi.TargetRelPathsOptions{
-		MustBeInSourceState: options.mustBeInSourceState,
-		MustNotBeExternal:   options.mustNotBeExternal,
-		Recursive:           options.recursive,
-		DestSystem:          c.destSystem,
-		DestDirAbsPath:      c.DestDirAbsPath,
-		ParentDirs:          options.parentDirs,
-	})
+
+	if len(targetRelPaths) == 0 {
+		return nil, nil
+	}
+
+	// Sort and de-duplicate targetRelPaths in place.
+	slices.SortFunc(targetRelPaths, chezmoi.CompareRelPaths)
+	n := 1
+	for i := 1; i < len(targetRelPaths); i++ {
+		if targetRelPaths[i] != targetRelPaths[i-1] {
+			targetRelPaths[n] = targetRelPaths[i]
+			n++
+		}
+	}
+	return targetRelPaths[:n], nil
 }
 
 // targetRelPathsBySourcePath returns the target relative paths for each arg in
 // args.
-func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, args []string, options targetRelPathsOptions) ([]chezmoi.RelPath, error) {
-	sourceRelPaths := make([]chezmoi.RelPath, 0, len(args))
-	for _, arg := range args {
+func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, args []string) ([]chezmoi.RelPath, error) {
+	targetRelPaths := make([]chezmoi.RelPath, len(args))
+	targetRelPathsBySourceRelPath := make(map[chezmoi.RelPath]chezmoi.RelPath)
+	_ = sourceState.ForEach(
+		func(targetRelPath chezmoi.RelPath, sourceStateEntry chezmoi.SourceStateEntry) error {
+			sourceRelPath := sourceStateEntry.SourceRelPath().RelPath()
+			targetRelPathsBySourceRelPath[sourceRelPath] = targetRelPath
+			return nil
+		},
+	)
+	for i, arg := range args {
 		argAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
 		if err != nil {
 			return nil, err
@@ -2984,16 +3157,13 @@ func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, ar
 		if err != nil {
 			return nil, err
 		}
-		sourceRelPaths = append(sourceRelPaths, sourceRelPath)
+		targetRelPath, ok := targetRelPathsBySourceRelPath[sourceRelPath]
+		if !ok {
+			return nil, fmt.Errorf("%s: not in source state", arg)
+		}
+		targetRelPaths[i] = targetRelPath
 	}
-	return sourceState.TargetRelPathsForSourcePaths(sourceRelPaths, chezmoi.TargetRelPathsOptions{
-		MustBeInSourceState: options.mustBeInSourceState,
-		MustNotBeExternal:   options.mustNotBeExternal,
-		Recursive:           options.recursive,
-		DestSystem:          c.destSystem,
-		DestDirAbsPath:      c.DestDirAbsPath,
-		ParentDirs:          options.parentDirs,
-	})
+	return targetRelPaths, nil
 }
 
 // targetValidArgs returns target completions for toComplete given args.

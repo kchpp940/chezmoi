@@ -30,10 +30,6 @@ func (c *Config) runTargetPathCmd(cmd *cobra.Command, args []string) error {
 	}
 
 	builder := strings.Builder{}
-	sourceDirAbsPath, err := c.getSourceDirAbsPath(nil)
-	if err != nil {
-		return err
-	}
 
 	for _, arg := range args {
 		argAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
@@ -41,12 +37,22 @@ func (c *Config) runTargetPathCmd(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		targetRelPath, err := chezmoi.SourceAbsPathToTargetRelPath(
-			c.sourceSystem,
-			sourceDirAbsPath,
-			argAbsPath,
-			c.encryption.EncryptedSuffix(),
-		)
+		argRelPath, err := argAbsPath.TrimDirPrefix(c.sourceDirAbsPath)
+		if err != nil {
+			return err
+		}
+
+		var sourceRelPath chezmoi.SourceRelPath
+		switch fileInfo, err := c.sourceSystem.Stat(argAbsPath); {
+		case err != nil:
+			return err
+		case fileInfo.IsDir():
+			sourceRelPath = chezmoi.NewSourceRelDirPath(argRelPath.String())
+		default:
+			sourceRelPath = chezmoi.NewSourceRelPath(argRelPath.String())
+		}
+
+		targetRelPath, err := sourceRelPath.TargetRelPath(c.encryption.EncryptedSuffix())
 		if err != nil {
 			return err
 		}

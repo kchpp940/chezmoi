@@ -133,23 +133,3 @@ func (p RelPath) TrimDirPrefix(dirPrefix RelPath) (RelPath, error) {
 func CompareRelPaths(a, b RelPath) int {
 	return cmp.Compare(a.relPath, b.relPath)
 }
-
-// ParentRelPaths returns relPaths with all parent directories prepended in
-// order from the root down. Duplicates are removed.
-func ParentRelPaths(relPaths []RelPath) []RelPath {
-	result := make([]RelPath, 0, len(relPaths))
-	seenRelPaths := make(map[RelPath]struct{}, len(relPaths))
-	for _, relPath := range relPaths {
-		components := relPath.SplitAll()
-		for i := 1; i < len(components); i++ {
-			parentRelPath := EmptyRelPath.Join(components[:i]...)
-			if _, ok := seenRelPaths[parentRelPath]; !ok {
-				result = append(result, parentRelPath)
-				seenRelPaths[parentRelPath] = struct{}{}
-			}
-		}
-		result = append(result, relPath)
-		seenRelPaths[relPath] = struct{}{}
-	}
-	return result
-}
