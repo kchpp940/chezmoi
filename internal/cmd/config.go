@@ -1133,15 +1133,19 @@ func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
 	switch {
 	case c.force:
 		return nil
-	case !decision.NeedReportDrift:
+	case decision.IsRegularFile && !decision.NeedReportDrift:
+		return nil
+	case !decision.IsRegularFile && targetEntryState != nil && targetEntryState.Equivalent(actualEntryState):
 		return nil
 	}
 
-	if decision.FromTextConvResult.Err != nil {
-		c.errorf("%s: textconv from actual failed: %v\n", targetRelPath, decision.FromTextConvResult.Err)
-	}
-	if decision.ToTextConvResult.Err != nil {
-		c.errorf("%s: textconv to target failed: %v\n", targetRelPath, decision.ToTextConvResult.Err)
+	if decision.IsRegularFile {
+		if decision.FromTextConvResult.Err != nil {
+			c.errorf("%s: textconv from actual failed: %v\n", targetRelPath, decision.FromTextConvResult.Err)
+		}
+		if decision.ToTextConvResult.Err != nil {
+			c.errorf("%s: textconv to target failed: %v\n", targetRelPath, decision.ToTextConvResult.Err)
+		}
 	}
 
 	type promptMode int

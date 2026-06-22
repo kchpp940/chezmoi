@@ -764,10 +764,21 @@ type ApplyOptions struct {
 }
 
 // Apply updates targetRelPath in targetDirAbsPath in destSystem to match s.
-// This function uses the unified StateDecision for all judgments, ensuring:
-//   - State is never written before Apply succeeds completely
-//   - Failures in keep-going mode do not pollute persistent state
-//   - All commands use the same drift detection logic
+//
+// This function distinguishes between regular files and special entry types
+// (scripts, external repos, modify-dir-with-cmd, symlinks, directories, etc.):
+//
+//   - For regular files (EntryStateTypeFile): Uses the unified StateDecision
+//     for all judgments (drift detection, textconv errors, lastWritten state
+//     updates). State is only written after Apply succeeds completely.
+//
+//   - For special types: Uses the TargetStateEntry's own SkipApply logic and
+//     internal state management. The StateDecision is still produced for
+//     PreApplyFunc consumption (e.g., status reporting), but its boolean
+//     flags are ignored for execution control.
+//
+// Failures in keep-going mode do not pollute persistent state for subsequent
+// entries because each entry gets its own copy of ApplyOptions.
 func (s *SourceState) Apply(
 	targetSystem, destSystem System,
 	persistentState PersistentState,
@@ -842,6 +853,26 @@ func (s *SourceState) Apply(
 		}
 	}
 
+	_, isScript := targetStateEntry.(*TargetStateScript)
+	_, isModifyDirWithCmd := targetStateEntry.(*TargetStateModifyDirWithCmd)
+	isSpecialType := isScript || isModifyDirWithCmd || !decision.IsRegularFile
+
+	if isSpecialType {
+		if skipApplyResult {
+			return nil
+		}
+		changed, applyErr := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
+		if applyErr != nil {
+			return applyErr
+		}
+		if changed && !isScript && !isModifyDirWithCmd {
+			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
 	if !decision.NeedApply {
 		if decision.NeedSilentUpdate {
 			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
@@ -871,30 +902,6 @@ func (s *SourceState) Apply(
 
 	if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
 		return err
-	}
-
-	if script, ok := targetStateEntry.(*TargetStateScript); ok {
-		contentsSHA256, err := script.ContentsSHA256()
-		if err != nil {
-			return err
-		}
-		scriptStateKey := []byte(hex.EncodeToString(contentsSHA256[:]))
-		if err := PersistentStateSet(persistentState, ScriptStateBucket, scriptStateKey, &ScriptState{
-			Name:  script.name,
-			RunAt: time.Now().UTC(),
-		}); err != nil {
-			return err
-		}
-	}
-
-	if _, ok := targetStateEntry.(*TargetStateModifyDirWithCmd); ok {
-		modifyDirWithCmdStateKey := []byte(targetAbsPath.String())
-		if err := PersistentStateSet(persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-			Name:  targetAbsPath,
-			RunAt: time.Now().UTC(),
-		}); err != nil {
-			return err
-		}
 	}
 
 	return nil

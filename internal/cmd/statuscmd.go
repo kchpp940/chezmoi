@@ -59,23 +59,30 @@ func (c *Config) runStatusCmd(cmd *cobra.Command, args []string) error {
 			slog.Any("actualEntryState", decision.ActualEntryState),
 		)
 
-		if decision.FromTextConvResult.Err != nil {
-			c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
-		}
-		if decision.ToTextConvResult.Err != nil {
-			c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
-		}
-
 		var (
 			x = ' '
 			y = ' '
 		)
+
 		switch {
 		case decision.TargetEntryState != nil && decision.TargetEntryState.Type == chezmoi.EntryStateTypeScript:
 			y = 'R'
-		case decision.NeedReportDrift:
-			x = statusRune(decision.LastWrittenEntryState, decision.ActualEntryState)
-			y = statusRune(decision.ActualEntryState, decision.TargetEntryState)
+		case decision.IsRegularFile:
+			if decision.FromTextConvResult.Err != nil {
+				c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
+			}
+			if decision.ToTextConvResult.Err != nil {
+				c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
+			}
+			if decision.NeedReportDrift {
+				x = statusRune(decision.LastWrittenEntryState, decision.ActualEntryState)
+				y = statusRune(decision.ActualEntryState, decision.TargetEntryState)
+			}
+		default:
+			if decision.TargetEntryState != nil && !decision.TargetEntryState.Equivalent(decision.ActualEntryState) {
+				x = statusRune(decision.LastWrittenEntryState, decision.ActualEntryState)
+				y = statusRune(decision.ActualEntryState, decision.TargetEntryState)
+			}
 		}
 
 		if x != ' ' || y != ' ' {

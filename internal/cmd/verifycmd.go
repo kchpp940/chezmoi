@@ -43,16 +43,22 @@ func (c *Config) newVerifyCmd() *cobra.Command {
 func (c *Config) runVerifyCmd(cmd *cobra.Command, args []string) error {
 	errorOnWriteSystem := chezmoi.NewErrorOnWriteSystem(c.destSystem, chezmoi.ExitCodeError(1))
 	preApplyFunc := func(decision chezmoi.StateDecision) error {
-		if decision.FromTextConvResult.Err != nil {
-			c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
-			return chezmoi.ExitCodeError(1)
-		}
-		if decision.ToTextConvResult.Err != nil {
-			c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
-			return chezmoi.ExitCodeError(1)
-		}
-		if decision.NeedReportDrift {
-			return fmt.Errorf("%s: target state does not match actual state", decision.TargetRelPath)
+		if decision.IsRegularFile {
+			if decision.FromTextConvResult.Err != nil {
+				c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
+				return chezmoi.ExitCodeError(1)
+			}
+			if decision.ToTextConvResult.Err != nil {
+				c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
+				return chezmoi.ExitCodeError(1)
+			}
+			if decision.NeedReportDrift {
+				return fmt.Errorf("%s: target state does not match actual state", decision.TargetRelPath)
+			}
+		} else {
+			if decision.TargetEntryState != nil && !decision.TargetEntryState.Equivalent(decision.ActualEntryState) {
+				return fmt.Errorf("%s: target state does not match actual state", decision.TargetRelPath)
+			}
 		}
 		return nil
 	}

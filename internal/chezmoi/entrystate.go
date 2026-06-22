@@ -174,9 +174,10 @@ type StateDecision struct {
 	SkipApplyResult        bool
 	SkipApplyErr           error
 
-	TargetIsNil bool
-	ActualIsNil bool
+	TargetIsNil   bool
+	ActualIsNil   bool
 	TargetIsEmpty bool
+	IsRegularFile bool
 
 	NeedApply          bool
 	NeedSilentUpdate   bool
@@ -187,6 +188,13 @@ type StateDecision struct {
 // MakeStateDecision produces a single, authoritative StateDecision for a
 // target entry. All commands (apply, diff, status, verify) should use this
 // function to ensure consistent behavior across the codebase.
+//
+// NOTE: The decision boolean flags (NeedApply, NeedSilentUpdate,
+// NeedReportDrift, NeedUpdateLastWritten) are only authoritative for regular
+// files (EntryStateTypeFile). For special types (scripts, external repos,
+// modify-dir-with-cmd, symlinks, dirs, etc.), callers should ignore these
+// flags and continue to use the respective TargetStateEntry's own SkipApply
+// and state management logic.
 func MakeStateDecision(
 	targetRelPath RelPath,
 	targetEntryState, lastWrittenEntryState, actualEntryState *EntryState,
@@ -206,28 +214,35 @@ func MakeStateDecision(
 	}
 
 	if targetEntryState != nil {
+		decision.IsRegularFile = targetEntryState.Type == EntryStateTypeFile
 		decision.TargetIsEmpty = targetEntryState.Type == EntryStateTypeRemove ||
-			(targetEntryState.Type == EntryStateTypeFile && len(targetEntryState.ContentsSHA256) == 0)
+			(decision.IsRegularFile && len(targetEntryState.ContentsSHA256) == 0)
 	}
 
 	decision.Comparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
 
-	if textConvFunc != nil && actualEntryState != nil && len(actualEntryState.contents) != 0 {
-		converted, convertedFlag, err := textConvFunc(targetRelPath.String(), actualEntryState.contents)
-		decision.FromTextConvResult = TextConvResult{
-			ConvertedContents: converted,
-			Converted:         convertedFlag,
-			Err:               err,
+	if decision.IsRegularFile && textConvFunc != nil {
+		if actualEntryState != nil && len(actualEntryState.contents) != 0 {
+			converted, convertedFlag, err := textConvFunc(targetRelPath.String(), actualEntryState.contents)
+			decision.FromTextConvResult = TextConvResult{
+				ConvertedContents: converted,
+				Converted:         convertedFlag,
+				Err:               err,
+			}
+		}
+
+		if targetEntryState != nil && len(targetEntryState.contents) != 0 {
+			converted, convertedFlag, err := textConvFunc(targetRelPath.String(), targetEntryState.contents)
+			decision.ToTextConvResult = TextConvResult{
+				ConvertedContents: converted,
+				Converted:         convertedFlag,
+				Err:               err,
+			}
 		}
 	}
 
-	if textConvFunc != nil && targetEntryState != nil && len(targetEntryState.contents) != 0 {
-		converted, convertedFlag, err := textConvFunc(targetRelPath.String(), targetEntryState.contents)
-		decision.ToTextConvResult = TextConvResult{
-			ConvertedContents: converted,
-			Converted:         convertedFlag,
-			Err:               err,
-		}
+	if !decision.IsRegularFile {
+		return decision
 	}
 
 	decision.NeedSilentUpdate = decision.Comparison.SilentUpdateNeeded

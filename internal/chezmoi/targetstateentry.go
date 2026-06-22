@@ -94,8 +94,18 @@ func (t *TargetStateModifyDirWithCmd) Apply(
 		}
 	}
 
+	runAt := time.Now().UTC()
 	if err := system.RunCmd(t.cmdFunc()); err != nil {
 		return false, fmt.Errorf("%s: %w", actualStateEntry.Path(), err)
+	}
+
+	modifyDirWithCmdStateKey := []byte(actualStateEntry.Path().String())
+	if err := PersistentStateSet(
+		persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
+			Name:  actualStateEntry.Path(),
+			RunAt: runAt,
+		}); err != nil {
+		return false, err
 	}
 
 	return true, nil
@@ -332,10 +342,16 @@ func (t *TargetStateScript) Apply(
 		return false, nil
 	}
 
+	contentsSHA256, err := t.ContentsSHA256()
+	if err != nil {
+		return false, err
+	}
+
 	contents, err := t.Contents()
 	if err != nil {
 		return false, err
 	}
+	runAt := time.Now().UTC()
 	if !isEmpty(contents) {
 		if err := system.RunScript(t.name, actualStateEntry.Path().Dir(), contents, RunScriptOptions{
 			Condition:     t.condition,
@@ -344,6 +360,22 @@ func (t *TargetStateScript) Apply(
 		}); err != nil {
 			return false, err
 		}
+	}
+
+	scriptStateKey := []byte(hex.EncodeToString(contentsSHA256[:]))
+	if err := PersistentStateSet(persistentState, ScriptStateBucket, scriptStateKey, &ScriptState{
+		Name:  t.name,
+		RunAt: runAt,
+	}); err != nil {
+		return false, err
+	}
+
+	entryStateKey := actualStateEntry.Path().Bytes()
+	if err := PersistentStateSet(persistentState, EntryStateBucket, entryStateKey, &EntryState{
+		Type:           EntryStateTypeScript,
+		ContentsSHA256: HexBytes(contentsSHA256[:]),
+	}); err != nil {
+		return false, err
 	}
 
 	return true, nil
