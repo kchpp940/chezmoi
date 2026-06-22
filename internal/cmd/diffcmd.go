@@ -51,12 +51,23 @@ func (c *Config) newDiffCmd() *cobra.Command {
 }
 
 func (c *Config) runDiffCmd(cmd *cobra.Command, args []string) (err error) {
+	preApplyFunc := func(decision chezmoi.StateDecision) error {
+		if decision.FromTextConvResult.Err != nil {
+			c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
+		}
+		if decision.ToTextConvResult.Err != nil {
+			c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
+		}
+		return nil
+	}
 	return c.applyArgs(cmd.Context(), c.destSystem, c.DestDirAbsPath, args, applyArgsOptions{
-		cmd:        cmd,
-		filter:     chezmoi.NewEntryTypeFilter(c.Diff.include.Bits(), c.Diff.Exclude.Bits()),
-		init:       c.Diff.init,
-		parentDirs: c.Diff.parentDirs,
-		recursive:  c.Diff.recursive,
-		umask:      c.Umask,
+		cmd:          cmd,
+		filter:       chezmoi.NewEntryTypeFilter(c.Diff.include.Bits(), c.Diff.Exclude.Bits()),
+		init:         c.Diff.init,
+		parentDirs:   c.Diff.parentDirs,
+		recursive:    c.Diff.recursive,
+		umask:        c.Umask,
+		preApplyFunc: preApplyFunc,
+		textConvFunc: c.TextConv.convert,
 	})
 }

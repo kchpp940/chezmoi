@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoi"
@@ -40,12 +42,28 @@ func (c *Config) newVerifyCmd() *cobra.Command {
 
 func (c *Config) runVerifyCmd(cmd *cobra.Command, args []string) error {
 	errorOnWriteSystem := chezmoi.NewErrorOnWriteSystem(c.destSystem, chezmoi.ExitCodeError(1))
+	preApplyFunc := func(decision chezmoi.StateDecision) error {
+		if decision.FromTextConvResult.Err != nil {
+			c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
+			return chezmoi.ExitCodeError(1)
+		}
+		if decision.ToTextConvResult.Err != nil {
+			c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
+			return chezmoi.ExitCodeError(1)
+		}
+		if decision.NeedReportDrift {
+			return fmt.Errorf("%s: target state does not match actual state", decision.TargetRelPath)
+		}
+		return nil
+	}
 	return c.applyArgs(cmd.Context(), errorOnWriteSystem, c.DestDirAbsPath, args, applyArgsOptions{
-		cmd:        cmd,
-		filter:     chezmoi.NewEntryTypeFilter(c.Verify.include.Bits(), c.Verify.Exclude.Bits()),
-		init:       c.Verify.init,
-		parentDirs: c.Verify.parentDirs,
-		recursive:  c.Verify.recursive,
-		umask:      c.Umask,
+		cmd:          cmd,
+		filter:       chezmoi.NewEntryTypeFilter(c.Verify.include.Bits(), c.Verify.Exclude.Bits()),
+		init:         c.Verify.init,
+		parentDirs:   c.Verify.parentDirs,
+		recursive:    c.Verify.recursive,
+		umask:        c.Umask,
+		preApplyFunc: preApplyFunc,
+		textConvFunc: c.TextConv.convert,
 	})
 }
