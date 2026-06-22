@@ -24,11 +24,6 @@ type azureKeyVaultConfig struct {
 	cred         *azidentity.DefaultAzureCredential
 }
 
-func (a *azureKeyVaultConfig) reset() {
-	a.vaults = nil
-	a.cred = nil
-}
-
 func (a *azureKeyVaultConfig) GetSecret(secretName, vaultName string) string {
 	if a.vaults == nil {
 		a.vaults = make(map[string]*azureKeyVault)

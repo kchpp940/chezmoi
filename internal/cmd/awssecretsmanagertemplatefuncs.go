@@ -18,12 +18,6 @@ type awsSecretsManagerConfig struct {
 	jsonCache map[string]map[string]any
 }
 
-func (a *awsSecretsManagerConfig) reset() {
-	a.svc = nil
-	a.cache = nil
-	a.jsonCache = nil
-}
-
 func (c *Config) awsSecretsManagerRawTemplateFunc(arn string) string {
 	if secret, ok := c.AWSSecretsManager.cache[arn]; ok {
 		return secret

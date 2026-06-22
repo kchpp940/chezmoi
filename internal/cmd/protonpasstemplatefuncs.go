@@ -10,12 +10,8 @@ import (
 )
 
 type protonPassConfig struct {
-	Command     string `json:"command" mapstructure="command" yaml="command"`
+	Command     string `json:"command" mapstructure:"command" yaml:"command"`
 	outputCache map[string][]byte
-}
-
-func (p *protonPassConfig) reset() {
-	p.outputCache = nil
 }
 
 func (c *Config) protonPassTemplateFunc(item string) string {

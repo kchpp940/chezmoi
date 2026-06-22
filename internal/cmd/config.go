@@ -791,16 +791,26 @@ func (c *Config) builtinDiffFile(
 	}
 	if fromMode.IsRegular() {
 		var err error
-		fromData, _, err = c.TextConv.convert(relPath.String(), fromData)
+		convertedFromData, _, err := c.TextConv.convert(relPath.String(), fromData)
 		if err != nil {
-			return err
+			c.logger.Warn("textconv failed for from data, falling back to original",
+				slog.String("path", relPath.String()),
+				slog.Any("err", err),
+			)
+		} else {
+			fromData = convertedFromData
 		}
 	}
 	if toMode.IsRegular() {
 		var err error
-		toData, _, err = c.TextConv.convert(relPath.String(), toData)
+		convertedToData, _, err := c.TextConv.convert(relPath.String(), toData)
 		if err != nil {
-			return err
+			c.logger.Warn("textconv failed for to data, falling back to original",
+				slog.String("path", relPath.String()),
+				slog.Any("err", err),
+			)
+		} else {
+			toData = convertedToData
 		}
 	}
 	diffPatch, err := chezmoi.DiffPatch(relPath, fromData, fromMode, toData, toMode)
@@ -862,173 +872,46 @@ func (c *Config) colorAutoFunc() bool {
 	return false
 }
 
-// createAndReloadConfigFile creates a config file if there is a config file
-// template, reloads the configuration, and ensures all computed state is
-// consistent.
-//
-// This function is a pure dispatcher: it invokes five phase helpers in a
-// fixed, documented order. The phase helpers have narrow, non-overlapping
-// responsibilities so that future changes to the init/reload pipeline
-// cannot accidentally reorder operations. See the helper doc comments for
-// each phase's exact contract.
-//
-// The ordering guarantees that `chezmoi init --apply` and
-// `chezmoi apply --init` both end up with sourceDir, template data,
-// encryption, secret providers, and environment variables derived
-// exclusively from the newly rendered configuration.
+// createAndReloadConfigFile creates a config file if it there is a config file
+// template and reloads it.
 func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
-	if err := c.prepareConfigTemplateRenderContext(); err != nil {
-		return err
-	}
-
-	configTemplate, configFileContents, noTemplate, err := c.renderConfigTemplate(cmd)
-	if err != nil {
-		return err
-	}
-	if !noTemplate {
-		if err := c.applyRenderedConfig(configTemplate, configFileContents); err != nil {
-			return err
-		}
-	}
-
-	// After this point the path is unified: whether or not a config
-	// template existed, we first invalidate every cache built from the
-	// previous configuration (whether that config was read from disk or
-	// just swapped in above), then rebuild all derived state exclusively
-	// from the current c.ConfigFile. This keeps the two branches
-	// behaviourally identical and impossible to drift.
-	c.invalidateOldDerivedState()
-
-	return c.rebuildDerivedStateFromNewConfig(cmd)
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Phase 1 — Prepare render context
-// ──────────────────────────────────────────────────────────────────────
-
-// prepareConfigTemplateRenderContext readies the environment for rendering
-// the config template without invalidating any other state. Specifically:
-//
-//   - Refresh sourceDir (reading .chezmoiroot) so that downstream helpers
-//     see the correct directory layout.
-//   - Update the currently-live templateData's sourceDir field and the
-//     CHEZMOI_SOURCE_DIR environment variable so that the config template
-//     in Phase 2 sees an accurate .chezmoi.sourceDir.
-//
-// This helper deliberately does NOT touch any cached values beyond those
-// two, so that every other piece of pre-init context (template data,
-// provider sessions, cached secrets, encryption, prompt responses, etc.)
-// remains live for the config template to reference.
-func (c *Config) prepareConfigTemplateRenderContext() error {
+	// Refresh the source directory, as there might be a .chezmoiroot file and
+	// the template data is set before .chezmoiroot is read.
 	sourceDirAbsPath, err := c.getSourceDirAbsPath(&getSourceDirAbsPathOptions{
 		refresh: true,
 	})
 	if err != nil {
 		return err
 	}
-	if c.templateData != nil {
-		c.templateData.sourceDir = sourceDirAbsPath.String()
-	}
+	c.templateData.sourceDir = sourceDirAbsPath.String()
 	os.Setenv("CHEZMOI_SOURCE_DIR", sourceDirAbsPath.String())
-	return nil
-}
 
-// ──────────────────────────────────────────────────────────────────────
-// Phase 2 — Render config template safely
-// ──────────────────────────────────────────────────────────────────────
-
-// renderedConfigTemplate holds the result of a successful config template
-// lookup and render.
-type renderedConfigTemplate struct {
-	// sourceAbsPath is the absolute path of the template source file on
-	// disk; used for error messages.
-	sourceAbsPath chezmoi.AbsPath
-	// targetRelPath is the relative name the rendered config file should
-	// take (e.g. chezmoi.yaml), used to compute the destination path.
-	targetRelPath chezmoi.RelPath
-	// format is the serialization format of the rendered contents, as
-	// inferred from the template file extension.
-	format chezmoi.Format
-	// contents are the raw bytes of the template file, needed to compute
-	// the persisted ConfigState hash.
-	contents []byte
-}
-
-// renderConfigTemplate looks up the config template, renders it (if
-// found), and returns the result. Preconditions:
-//
-//   - prepareConfigTemplateRenderContext has already been called, so
-//     template data contains the refreshed sourceDir.
-//   - All pre-init context (providers, caches, encryption) is still valid,
-//     so the template may freely use `prompt*`, secret backends, etc.
-//
-// Return values:
-//   - rendered: non-nil iff a template was found and rendered.
-//   - configFileContents: rendered config file bytes; only valid when
-//     rendered != nil.
-//   - done: when true, no template exists and persistent state has been
-//     cleaned up; the caller should skip straight to Phase 5.
-//   - err: non-nil when lookup, render, or state cleanup failed.
-func (c *Config) renderConfigTemplate(cmd *cobra.Command) (rendered *renderedConfigTemplate, configFileContents []byte, done bool, err error) {
+	// Find config template, execute it, and create config file.
 	configTemplate, err := c.findConfigTemplate()
 	if err != nil {
-		return nil, nil, false, err
+		return err
 	}
+
 	if configTemplate == nil {
-		if err := c.persistentState.Delete(chezmoi.ConfigStateBucket, configStateKey); err != nil {
-			return nil, nil, false, err
-		}
-		// No template. The caller will rebuild derived state from the
-		// existing c.ConfigFile, which is the correct behaviour when the
-		// only change is e.g. a new .chezmoiroot on disk.
-		return nil, nil, true, nil
+		return c.persistentState.Delete(chezmoi.ConfigStateBucket, configStateKey)
 	}
 
-	contents, err := c.createConfigFileContents(configTemplate.targetRelPath, configTemplate.contents, cmd)
+	configFileContents, err := c.createConfigFileContents(configTemplate.targetRelPath, configTemplate.contents, cmd)
 	if err != nil {
-		return nil, nil, false, err
+		return err
 	}
 
-	rendered = &renderedConfigTemplate{
-		sourceAbsPath: configTemplate.sourceAbsPath,
-		targetRelPath: configTemplate.targetRelPath,
-		format:        configTemplate.format,
-		contents:      configTemplate.contents,
-	}
-	return rendered, contents, false, nil
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Phase 3 — Validate, persist, and swap in new configuration
-// ──────────────────────────────────────────────────────────────────────
-
-// applyRenderedConfig takes the output of renderConfigTemplate and:
-//
-//  1. Decodes the rendered contents into a local ConfigFile purely to
-//     validate the document (invalid configs are rejected before any
-//     files are touched on disk).
-//  2. Creates parent directories and writes the rendered contents to the
-//     final config file location with 0600 permissions.
-//  3. Stores the template contents hash in persistentState so that
-//     subsequent runs can detect template modifications.
-//  4. Decodes the rendered contents into c.ConfigFile itself, replacing
-//     the previous configuration wholesale.
-//
-// Upon return, c.ConfigFile reflects the new configuration, but all
-// computed state (template data, sourceDir cache, sourceState, providers,
-// encryption) still reflects the old configuration — the caller must
-// follow this call with invalidateOldDerivedState +
-// rebuildDerivedStateFromNewConfig.
-func (c *Config) applyRenderedConfig(rendered *renderedConfigTemplate, configFileContents []byte) error {
+	// Validate the config file.
 	var configFile ConfigFile
-	if err := c.decodeConfigContents(rendered.format, configFileContents, &configFile); err != nil {
-		return fmt.Errorf("%s: %w", rendered.sourceAbsPath, err)
+	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &configFile); err != nil {
+		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
 
+	// Write the config.
 	configPath := c.init.configPath
-	if configPath.IsEmpty() {
+	if c.init.configPath.IsEmpty() {
 		if c.customConfigFileAbsPath.IsEmpty() {
-			configPath = chezmoi.NewAbsPath(c.bds.ConfigHome).Join(chezmoiRelPath, rendered.targetRelPath)
+			configPath = chezmoi.NewAbsPath(c.bds.ConfigHome).Join(chezmoiRelPath, configTemplate.targetRelPath)
 		} else {
 			configPath = c.customConfigFileAbsPath
 		}
@@ -1041,7 +924,7 @@ func (c *Config) applyRenderedConfig(rendered *renderedConfigTemplate, configFil
 	}
 
 	configStateValue, err := chezmoi.FormatJSON.Marshal(configState{
-		ConfigTemplateContentsSHA256: chezmoi.HexBytes(sha256Sum(rendered.contents)),
+		ConfigTemplateContentsSHA256: chezmoi.HexBytes(sha256Sum(configTemplate.contents)),
 	})
 	if err != nil {
 		return err
@@ -1050,147 +933,15 @@ func (c *Config) applyRenderedConfig(rendered *renderedConfigTemplate, configFil
 		return err
 	}
 
-	if err := c.decodeConfigContents(rendered.format, configFileContents, &c.ConfigFile); err != nil {
-		return fmt.Errorf("%s: %w", rendered.sourceAbsPath, err)
+	// Reload the config.
+	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &c.ConfigFile); err != nil {
+		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
-	return nil
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Phase 4 — Invalidate *old* derived state
-// ──────────────────────────────────────────────────────────────────────
-
-// invalidateOldDerivedState discards every cached value that was derived
-// from the previous configuration. Call this immediately AFTER
-// c.ConfigFile has been replaced (applyRenderedConfig) and BEFORE any
-// derived state is rebuilt from the new configuration.
-//
-// The actual reset logic lives in:
-//   - Config.resetComputedState            (templateData, sourceDir cache,
-//     sourceState cache)
-//   - ConfigFile.resetSecretProviders      (18 password/secret providers)
-//   - each provider's own reset() method   (provider-local caches,
-//     clients, sessions)
-//   - gitHubData.reset / keyringData.reset (Config-level secret state)
-//
-// By routing everything through this single helper, future maintenance
-// of the init/reload pipeline cannot accidentally skip a reset step.
-func (c *Config) invalidateOldDerivedState() {
-	c.resetComputedState()
-}
-
-// ──────────────────────────────────────────────────────────────────────
-// Phase 5 — Build derived state from the new configuration
-// ──────────────────────────────────────────────────────────────────────
-
-// rebuildDerivedStateFromNewConfig constructs every piece of derived state
-// from the current c.ConfigFile. It must be called AFTER
-// invalidateOldDerivedState so that none of the returned caches are
-// poisoned by old values.
-//
-// The operations are intentionally ordered by dependency:
-//
-//  1. WorkingTreeAbsPath depends on sourceDir, which depends on
-//     c.ConfigFile.SourceDirAbsPath + .chezmoiroot. Because the sourceDir
-//     cache was cleared in Phase 4, recomputeWorkingTreeAbsPath triggers
-//     a fresh read of .chezmoiroot using the new SourceDirAbsPath.
-//  2. setEncryption depends only on c.ConfigFile (age/gpg settings).
-//  3. setAllEnvironmentVariables rebuilds templateData (which pulls in
-//     the new config map, the freshly-computed sourceDir, and the new
-//     WorkingTreeAbsPath) and then emits all CHEZMOI_* plus user-defined
-//     Env/ScriptEnv variables.
-//
-// Any subsequent call to getSourceState() will see only the rebuilt state
-// and therefore construct a source state using only the new config.
-func (c *Config) rebuildDerivedStateFromNewConfig(cmd *cobra.Command) error {
-	c.recomputeWorkingTreeAbsPath()
 
 	if err := c.setEncryption(); err != nil {
 		return err
 	}
 
-	return c.setAllEnvironmentVariables(cmd)
-}
-
-// recomputeWorkingTreeAbsPath recalculates WorkingTreeAbsPath based on the
-// current sourceDir. This must be called whenever sourceDir changes (e.g.
-// after processing .chezmoiroot during init).
-func (c *Config) recomputeWorkingTreeAbsPath() {
-	sourceDirAbsPath, err := c.getSourceDirAbsPath(nil)
-	if err != nil {
-		return
-	}
-	if sourceDirAbsPath.IsEmpty() {
-		return
-	}
-	c.WorkingTreeAbsPath = sourceDirAbsPath
-	for {
-		gitDirAbsPath := c.WorkingTreeAbsPath.JoinString(git.GitDirName)
-		if _, err := c.baseSystem.Stat(gitDirAbsPath); err == nil {
-			break
-		}
-		prevWorkingTreeDirAbsPath := c.WorkingTreeAbsPath
-		c.WorkingTreeAbsPath = c.WorkingTreeAbsPath.Dir()
-		if c.WorkingTreeAbsPath == c.homeDirAbsPath || c.WorkingTreeAbsPath.Len() >= prevWorkingTreeDirAbsPath.Len() {
-			c.WorkingTreeAbsPath = sourceDirAbsPath
-			break
-		}
-	}
-}
-
-// setAllEnvironmentVariables sets all environment variables in a
-// consistent order: first built-in CHEZMOI_* variables from the current
-// template data, then user-defined variables from Env/ScriptEnv config.
-// This should be called whenever template data or configuration changes.
-func (c *Config) setAllEnvironmentVariables(cmd *cobra.Command) error {
-	templateData := c.getTemplateData(cmd)
-	os.Setenv("CHEZMOI", "1")
-	for key, value := range map[string]string{
-		"ARCH":          templateData.arch,
-		"ARGS":          strings.Join(templateData.args, " "),
-		"CACHE_DIR":     templateData.cacheDir,
-		"COMMAND":       templateData.command,
-		"COMMAND_DIR":   templateData.commandDir,
-		"CONFIG_FILE":   templateData.configFile,
-		"DEST_DIR":      templateData.destDir,
-		"EXECUTABLE":    templateData.executable,
-		"FQDN_HOSTNAME": templateData.fqdnHostname,
-		"GID":           templateData.gid,
-		"GROUP":         templateData.group,
-		"HOME_DIR":      templateData.homeDir,
-		"HOSTNAME":      templateData.hostname,
-		"OS":            templateData.os,
-		"RAW_HOME_DIR":  templateData.rawHomeDir,
-		"SOURCE_DIR":    templateData.sourceDir,
-		"UID":           templateData.uid,
-		"USERNAME":      templateData.username,
-		"WORKING_TREE":  templateData.workingTree,
-	} {
-		os.Setenv("CHEZMOI_"+key, value)
-	}
-	if c.Verbose {
-		os.Setenv("CHEZMOI_VERBOSE", "1")
-	}
-	for groupKey, group := range map[string]map[string]any{
-		"KERNEL":          templateData.kernel,
-		"OS_RELEASE":      templateData.osRelease,
-		"VERSION":         templateData.version,
-		"WINDOWS_VERSION": templateData.windowsVersion,
-	} {
-		for key, value := range group {
-			key := "CHEZMOI_" + groupKey + "_" + camelCaseToUpperSnakeCase(key)
-			var valueStr string
-			switch value := value.(type) {
-			case string:
-				valueStr = value
-			case uint64:
-				valueStr = strconv.FormatUint(value, 10)
-			default:
-				panic(fmt.Errorf("%s has unexpected type %T", key, value))
-			}
-			os.Setenv(key, valueStr)
-		}
-	}
 	return c.setEnvironmentVariables()
 }
 
@@ -2753,7 +2504,56 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 		}
 	}
 
-	if err := c.setAllEnvironmentVariables(cmd); err != nil {
+	templateData := c.getTemplateData(cmd)
+	os.Setenv("CHEZMOI", "1")
+	for key, value := range map[string]string{
+		"ARCH":          templateData.arch,
+		"ARGS":          strings.Join(templateData.args, " "),
+		"CACHE_DIR":     templateData.cacheDir,
+		"COMMAND":       templateData.command,
+		"COMMAND_DIR":   templateData.commandDir,
+		"CONFIG_FILE":   templateData.configFile,
+		"DEST_DIR":      templateData.destDir,
+		"EXECUTABLE":    templateData.executable,
+		"FQDN_HOSTNAME": templateData.fqdnHostname,
+		"GID":           templateData.gid,
+		"GROUP":         templateData.group,
+		"HOME_DIR":      templateData.homeDir,
+		"HOSTNAME":      templateData.hostname,
+		"OS":            templateData.os,
+		"RAW_HOME_DIR":  templateData.rawHomeDir,
+		"SOURCE_DIR":    templateData.sourceDir,
+		"UID":           templateData.uid,
+		"USERNAME":      templateData.username,
+		"WORKING_TREE":  templateData.workingTree,
+	} {
+		os.Setenv("CHEZMOI_"+key, value)
+	}
+	if c.Verbose {
+		os.Setenv("CHEZMOI_VERBOSE", "1")
+	}
+	for groupKey, group := range map[string]map[string]any{
+		"KERNEL":          templateData.kernel,
+		"OS_RELEASE":      templateData.osRelease,
+		"VERSION":         templateData.version,
+		"WINDOWS_VERSION": templateData.windowsVersion,
+	} {
+		for key, value := range group {
+			key := "CHEZMOI_" + groupKey + "_" + camelCaseToUpperSnakeCase(key)
+			var valueStr string
+			switch value := value.(type) {
+			case string:
+				valueStr = value
+			case uint64:
+				valueStr = strconv.FormatUint(value, 10)
+			default:
+				panic(fmt.Errorf("%s has unexpected type %T", key, value))
+			}
+			os.Setenv(key, valueStr)
+		}
+	}
+
+	if err := c.setEnvironmentVariables(); err != nil {
 		return err
 	}
 
@@ -2922,31 +2722,6 @@ func (c *Config) readConfig(configFileAbsPath chezmoi.AbsPath) error {
 func (c *Config) resetSourceState() {
 	c.sourceState = nil
 	c.sourceStateErr = nil
-}
-
-// resetComputedState clears all computed state caches to ensure that config
-// changes during --init are fully reflected in subsequent operations. This
-// includes template data, source directory cache, source state, and all
-// secret provider caches and state.
-func (c *Config) resetComputedState() {
-	c.templateData = nil
-	c.sourceDirAbsPath = chezmoi.EmptyAbsPath
-	c.sourceDirAbsPathErr = nil
-	c.resetSourceState()
-	c.resetSecretProviderState()
-}
-
-// resetSecretProviderState clears all in-memory state and caches for secret
-// providers. This is needed when configuration changes during --init, as the
-// provider configuration (command paths, URLs, regions, etc.) may have
-// changed, making previously cached clients, sessions, or values invalid.
-// Provider state is reset by dispatching to each provider's own reset()
-// method, so that the knowledge of which fields need clearing lives with
-// the provider definition rather than being duplicated here.
-func (c *Config) resetSecretProviderState() {
-	c.ConfigFile.resetSecretProviders()
-	c.gitHub.reset()
-	c.keyring.reset()
 }
 
 // run runs name with args in dir.
@@ -3524,33 +3299,6 @@ func newConfigFile(bds *xdg.BaseDirectorySpecification) ConfigFile {
 			recursive: true,
 		},
 	}
-}
-
-// resetSecretProviders resets in-memory state for all password/secret
-// providers embedded in ConfigFile. Each provider is responsible for
-// clearing its own caches, clients, sessions, etc. via its reset() method.
-// This keeps the list of which state needs clearing together with each
-// provider's definition, making it easy to update when adding new cache
-// fields to a provider.
-func (f *ConfigFile) resetSecretProviders() {
-	f.AWSSecretsManager.reset()
-	f.AzureKeyVault.reset()
-	f.Bitwarden.reset()
-	f.BitwardenSecrets.reset()
-	f.Dashlane.reset()
-	f.Doppler.reset()
-	f.Ejson.reset()
-	f.Gopass.reset()
-	f.Keepassxc.reset()
-	f.Keeper.reset()
-	f.Lastpass.reset()
-	f.Onepassword.reset()
-	f.Pass.reset()
-	f.Passhole.reset()
-	f.ProtonPass.reset()
-	f.RBW.reset()
-	f.Secret.reset()
-	f.Vault.reset()
 }
 
 func (f *ConfigFile) toMap() map[string]any {

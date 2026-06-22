@@ -43,22 +43,14 @@ type onepasswordAccount struct {
 }
 
 type onepasswordConfig struct {
-	Command       string          `json:"command" mapstructure="command" yaml="command"`
-	Prompt        bool            `json:"prompt"  mapstructure="prompt"  yaml="prompt"`
-	Mode          onepasswordMode `json:"mode"    mapstructure="mode"    yaml="mode"`
+	Command       string          `json:"command" mapstructure:"command" yaml:"command"`
+	Prompt        bool            `json:"prompt"  mapstructure:"prompt"  yaml:"prompt"`
+	Mode          onepasswordMode `json:"mode"    mapstructure:"mode"    yaml:"mode"`
 	outputCache   map[string][]byte
 	sessionTokens map[string]string
 	accountMap    map[string]string
 	accountMapErr error
 	modeChecked   bool
-}
-
-func (o *onepasswordConfig) reset() {
-	o.outputCache = nil
-	o.sessionTokens = nil
-	o.accountMap = nil
-	o.accountMapErr = nil
-	o.modeChecked = false
 }
 
 type onepasswordArgs struct {

@@ -82,3 +82,27 @@ func (s *EntryState) LogValue() slog.Value {
 func (s *EntryState) Overwrite() bool {
 	return s.overwrite
 }
+
+// StateComparisonResult represents the result of comparing three entry states.
+type StateComparisonResult struct {
+	TargetMatchesActual  bool
+	LastWrittenMatchesActual bool
+	SilentUpdateNeeded   bool
+	ApplyNeeded          bool
+}
+
+// CompareStates compares targetEntryState, lastWrittenEntryState, and actualEntryState
+// and returns a StateComparisonResult with flags indicating what actions are needed.
+// This function provides a unified way to compare states across apply, diff, status,
+// and verify commands.
+func CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState *EntryState) StateComparisonResult {
+	targetMatchesActual := targetEntryState.Equivalent(actualEntryState)
+	lastWrittenMatchesActual := lastWrittenEntryState.Equivalent(actualEntryState)
+
+	return StateComparisonResult{
+		TargetMatchesActual:     targetMatchesActual,
+		LastWrittenMatchesActual: lastWrittenMatchesActual,
+		SilentUpdateNeeded:      targetMatchesActual && !lastWrittenMatchesActual,
+		ApplyNeeded:             !targetMatchesActual,
+	}
+}

@@ -9,12 +9,8 @@ import (
 )
 
 type passConfig struct {
-	Command string `json:"command" mapstructure="command" yaml="command"`
+	Command string `json:"command" mapstructure:"command" yaml:"command"`
 	cache   map[string][]byte
-}
-
-func (p *passConfig) reset() {
-	p.cache = nil
 }
 
 func (c *Config) passTemplateFunc(id string) string {

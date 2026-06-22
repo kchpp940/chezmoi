@@ -12,15 +12,11 @@ import (
 )
 
 type dopplerConfig struct {
-	Command     string   `json:"command" mapstructure:"command" yaml="command"`
-	Args        []string `json:"args"    mapstructure="args"    yaml="args"`
-	Project     string   `json:"project" mapstructure:"project" yaml="project"`
-	Config      string   `json:"config"  mapstructure="config"  yaml="config"`
+	Command     string   `json:"command" mapstructure:"command" yaml:"command"`
+	Args        []string `json:"args"    mapstructure:"args"    yaml:"args"`
+	Project     string   `json:"project" mapstructure:"project" yaml:"project"`
+	Config      string   `json:"config"  mapstructure:"config"  yaml:"config"`
 	outputCache map[string][]byte
-}
-
-func (d *dopplerConfig) reset() {
-	d.outputCache = nil
 }
 
 func (c *Config) dopplerTemplateFunc(key string, additionalArgs ...string) any {

@@ -11,12 +11,8 @@ import (
 )
 
 type bitwardenSecretsConfig struct {
-	Command     string `json:"command" mapstructure="command" yaml="command"`
+	Command     string `json:"command" mapstructure:"command" yaml:"command"`
 	outputCache map[string][]byte
-}
-
-func (b *bitwardenSecretsConfig) reset() {
-	b.outputCache = nil
 }
 
 func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ...string) any {
@@ -37,7 +33,7 @@ func (c *Config) bitwardenSecretsTemplateFunc(secretID string, additionalArgs ..
 
 func (c *Config) bitwardenSecretsOutput(args []string) ([]byte, error) {
 	key := strings.Join(args, "\x00")
-	if data, ok := c.BitwardenSecrets.outputCache[key]; ok {
+	if data, ok := c.Bitwarden.outputCache[key]; ok {
 		return data, nil
 	}
 

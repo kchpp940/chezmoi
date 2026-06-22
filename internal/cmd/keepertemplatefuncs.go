@@ -11,13 +11,9 @@ import (
 )
 
 type keeperConfig struct {
-	Command     string   `json:"command" mapstructure="command" yaml="command"`
-	Args        []string `json:"args"    mapstructure="args"    yaml="args"`
+	Command     string   `json:"command" mapstructure:"command" yaml:"command"`
+	Args        []string `json:"args"    mapstructure:"args"    yaml:"args"`
 	outputCache map[string][]byte
-}
-
-func (k *keeperConfig) reset() {
-	k.outputCache = nil
 }
 
 func (c *Config) keeperTemplateFunc(record string) map[string]any {

@@ -54,16 +54,6 @@ type gitHubData struct {
 	tagsCache           map[string]map[string][]*github.RepositoryTag
 }
 
-func (g *gitHubData) reset() {
-	g.client = nil
-	g.clientErr = nil
-	g.keysCache = nil
-	g.versionReleaseCache = nil
-	g.latestReleaseCache = nil
-	g.releasesCache = nil
-	g.tagsCache = nil
-}
-
 func (c *Config) gitHubKeysTemplateFunc(user string) []*github.Key {
 	if keys, ok := c.gitHub.keysCache[user]; ok {
 		return keys

@@ -807,8 +807,11 @@ func (s *SourceState) Apply(
 		return err
 	}
 
+	var lastWrittenEntryState *EntryState
+	var actualEntryState *EntryState
+	var stateComparison StateComparisonResult
+
 	if options.PreApplyFunc != nil {
-		var lastWrittenEntryState *EntryState
 		var entryState EntryState
 		ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
 		if err != nil {
@@ -818,24 +821,12 @@ func (s *SourceState) Apply(
 			lastWrittenEntryState = &entryState
 		}
 
-		actualEntryState, err := actualStateEntry.EntryState()
+		actualEntryState, err = actualStateEntry.EntryState()
 		if err != nil {
 			return err
 		}
 
-		// If the target entry state matches the actual entry state, but not the
-		// last written entry state then silently update the last written entry
-		// state. This handles the case where the user makes identical edits to
-		// the source and target states: instead of reporting a diff with
-		// respect to the last written state, we record the effect of the last
-		// apply as the last written state.
-		if targetEntryState.Equivalent(actualEntryState) && !lastWrittenEntryState.Equivalent(actualEntryState) {
-			err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState)
-			if err != nil {
-				return err
-			}
-			lastWrittenEntryState = targetEntryState
-		}
+		stateComparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
 
 		err = options.PreApplyFunc(targetRelPath, targetEntryState, lastWrittenEntryState, actualEntryState)
 		if err != nil {
@@ -843,13 +834,70 @@ func (s *SourceState) Apply(
 		}
 	}
 
-	if changed, err := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry); err != nil {
+	changed, err := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
+	if err != nil {
 		return err
-	} else if !changed {
+	}
+
+	if options.PreApplyFunc == nil {
+		var entryState EntryState
+		ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
+		if err != nil {
+			return err
+		}
+		if ok {
+			lastWrittenEntryState = &entryState
+		}
+
+		actualEntryState, err = actualStateEntry.EntryState()
+		if err != nil {
+			return err
+		}
+
+		stateComparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
+	}
+
+	if !changed && !stateComparison.SilentUpdateNeeded {
 		return nil
 	}
 
-	return PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState)
+	if stateComparison.SilentUpdateNeeded {
+		if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+			return err
+		}
+	}
+
+	if changed {
+		if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+			return err
+		}
+
+		if script, ok := targetStateEntry.(*TargetStateScript); ok {
+			contentsSHA256, err := script.ContentsSHA256()
+			if err != nil {
+				return err
+			}
+			scriptStateKey := []byte(hex.EncodeToString(contentsSHA256[:]))
+			if err := PersistentStateSet(persistentState, ScriptStateBucket, scriptStateKey, &ScriptState{
+				Name:  script.name,
+				RunAt: time.Now().UTC(),
+			}); err != nil {
+				return err
+			}
+		}
+
+		if _, ok := targetStateEntry.(*TargetStateModifyDirWithCmd); ok {
+			modifyDirWithCmdStateKey := []byte(targetAbsPath.String())
+			if err := PersistentStateSet(persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
+				Name:  targetAbsPath,
+				RunAt: time.Now().UTC(),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Encryption returns s's encryption.

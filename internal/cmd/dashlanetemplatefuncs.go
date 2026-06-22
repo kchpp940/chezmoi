@@ -10,15 +10,10 @@ import (
 )
 
 type dashlaneConfig struct {
-	Command       string   `json:"command" mapstructure="command" yaml="command"`
-	Args          []string `json:"args"    mapstructure="args"    yaml="args"`
+	Command       string   `json:"command" mapstructure:"command" yaml:"command"`
+	Args          []string `json:"args"    mapstructure:"args"    yaml:"args"`
 	cacheNote     map[string]any
 	cachePassword map[string]any
-}
-
-func (d *dashlaneConfig) reset() {
-	d.cacheNote = nil
-	d.cachePassword = nil
 }
 
 func (c *Config) dashlaneNoteTemplateFunc(filter string) any {

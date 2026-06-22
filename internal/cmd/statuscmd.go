@@ -59,6 +59,8 @@ func (c *Config) runStatusCmd(cmd *cobra.Command, args []string) error {
 			slog.Any("actualEntryState", actualEntryState),
 		)
 
+		stateComparison := chezmoi.CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
+
 		var (
 			x = ' '
 			y = ' '
@@ -66,7 +68,7 @@ func (c *Config) runStatusCmd(cmd *cobra.Command, args []string) error {
 		switch {
 		case targetEntryState.Type == chezmoi.EntryStateTypeScript:
 			y = 'R'
-		case !targetEntryState.Equivalent(actualEntryState):
+		case stateComparison.ApplyNeeded:
 			x = statusRune(lastWrittenEntryState, actualEntryState)
 			y = statusRune(actualEntryState, targetEntryState)
 		}
