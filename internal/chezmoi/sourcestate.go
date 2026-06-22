@@ -751,17 +751,23 @@ func (s *SourceState) AddDestAbsPathInfos(
 	}
 }
 
-// A PreApplyFunc is called before a target is applied.
-type PreApplyFunc func(targetRelPath RelPath, targetEntryState, lastWrittenEntryState, actualEntryState *EntryState) error
+// A PreApplyFunc is called before a target is applied, receiving the complete
+// unified StateDecision to ensure consistent behavior across commands.
+type PreApplyFunc func(decision StateDecision) error
 
 // ApplyOptions are options to SourceState.ApplyAll and SourceState.ApplyOne.
 type ApplyOptions struct {
 	Filter       *EntryTypeFilter
 	PreApplyFunc PreApplyFunc
 	Umask        fs.FileMode
+	TextConvFunc func(path string, data []byte) ([]byte, bool, error)
 }
 
 // Apply updates targetRelPath in targetDirAbsPath in destSystem to match s.
+// This function uses the unified StateDecision for all judgments, ensuring:
+//   - State is never written before Apply succeeds completely
+//   - Failures in keep-going mode do not pollute persistent state
+//   - All commands use the same drift detection logic
 func (s *SourceState) Apply(
 	targetSystem, destSystem System,
 	persistentState PersistentState,
@@ -795,11 +801,9 @@ func (s *SourceState) Apply(
 		return err
 	}
 
-	switch skip, err := targetStateEntry.SkipApply(persistentState, targetAbsPath); {
-	case err != nil:
-		return err
-	case skip:
-		return nil
+	skipApplyResult, skipApplyErr := targetStateEntry.SkipApply(persistentState, targetAbsPath)
+	if skipApplyErr != nil {
+		return skipApplyErr
 	}
 
 	actualStateEntry, err := NewActualStateEntry(targetSystem, targetAbsPath, nil, nil)
@@ -808,92 +812,88 @@ func (s *SourceState) Apply(
 	}
 
 	var lastWrittenEntryState *EntryState
-	var actualEntryState *EntryState
-	var stateComparison StateComparisonResult
-
-	if options.PreApplyFunc != nil {
-		var entryState EntryState
-		ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
-		if err != nil {
-			return err
-		}
-		if ok {
-			lastWrittenEntryState = &entryState
-		}
-
-		actualEntryState, err = actualStateEntry.EntryState()
-		if err != nil {
-			return err
-		}
-
-		stateComparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
-
-		err = options.PreApplyFunc(targetRelPath, targetEntryState, lastWrittenEntryState, actualEntryState)
-		if err != nil {
-			return err
-		}
+	var entryState EntryState
+	ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
+	if err != nil {
+		return err
+	}
+	if ok {
+		lastWrittenEntryState = &entryState
 	}
 
-	changed, err := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
+	actualEntryState, err := actualStateEntry.EntryState()
 	if err != nil {
 		return err
 	}
 
-	if options.PreApplyFunc == nil {
-		var entryState EntryState
-		ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
-		if err != nil {
+	decision := MakeStateDecision(
+		targetRelPath,
+		targetEntryState,
+		lastWrittenEntryState,
+		actualEntryState,
+		skipApplyResult,
+		skipApplyErr,
+		options.TextConvFunc,
+	)
+
+	if options.PreApplyFunc != nil {
+		if err := options.PreApplyFunc(decision); err != nil {
 			return err
 		}
-		if ok {
-			lastWrittenEntryState = &entryState
-		}
-
-		actualEntryState, err = actualStateEntry.EntryState()
-		if err != nil {
-			return err
-		}
-
-		stateComparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
 	}
 
-	if !changed && !stateComparison.SilentUpdateNeeded {
+	if !decision.NeedApply {
+		if decision.NeedSilentUpdate {
+			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
-	if stateComparison.SilentUpdateNeeded {
-		if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+	changed, applyErr := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
+	if applyErr != nil {
+		return applyErr
+	}
+
+	if !changed {
+		if decision.NeedSilentUpdate {
+			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if !decision.NeedUpdateLastWritten {
+		return nil
+	}
+
+	if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+		return err
+	}
+
+	if script, ok := targetStateEntry.(*TargetStateScript); ok {
+		contentsSHA256, err := script.ContentsSHA256()
+		if err != nil {
+			return err
+		}
+		scriptStateKey := []byte(hex.EncodeToString(contentsSHA256[:]))
+		if err := PersistentStateSet(persistentState, ScriptStateBucket, scriptStateKey, &ScriptState{
+			Name:  script.name,
+			RunAt: time.Now().UTC(),
+		}); err != nil {
 			return err
 		}
 	}
 
-	if changed {
-		if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+	if _, ok := targetStateEntry.(*TargetStateModifyDirWithCmd); ok {
+		modifyDirWithCmdStateKey := []byte(targetAbsPath.String())
+		if err := PersistentStateSet(persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
+			Name:  targetAbsPath,
+			RunAt: time.Now().UTC(),
+		}); err != nil {
 			return err
-		}
-
-		if script, ok := targetStateEntry.(*TargetStateScript); ok {
-			contentsSHA256, err := script.ContentsSHA256()
-			if err != nil {
-				return err
-			}
-			scriptStateKey := []byte(hex.EncodeToString(contentsSHA256[:]))
-			if err := PersistentStateSet(persistentState, ScriptStateBucket, scriptStateKey, &ScriptState{
-				Name:  script.name,
-				RunAt: time.Now().UTC(),
-			}); err != nil {
-				return err
-			}
-		}
-
-		if _, ok := targetStateEntry.(*TargetStateModifyDirWithCmd); ok {
-			modifyDirWithCmdStateKey := []byte(targetAbsPath.String())
-			if err := PersistentStateSet(persistentState, GitRepoExternalStateBucket, modifyDirWithCmdStateKey, &ModifyDirWithCmdState{
-				Name:  targetAbsPath,
-				RunAt: time.Now().UTC(),
-			}); err != nil {
-				return err
-			}
 		}
 	}
 

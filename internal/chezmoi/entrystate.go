@@ -2,12 +2,15 @@ package chezmoi
 
 import (
 	"bytes"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"runtime"
 
 	"chezmoi.io/chezmoi/v2/internal/chezmoilog"
 )
+
+var ErrTextConvFailed = errors.New("textconv failed")
 
 // An EntryStateType is an entry state type.
 type EntryStateType string
@@ -83,12 +86,53 @@ func (s *EntryState) Overwrite() bool {
 	return s.overwrite
 }
 
+// StateChangeDetails contains fine-grained details about what changed between
+// two entry states.
+type StateChangeDetails struct {
+	TypeChanged     bool
+	ContentsChanged bool
+	ModeChanged     bool
+}
+
+// DetectChanges returns fine-grained details about the changes between a and b.
+func DetectChanges(a, b *EntryState) StateChangeDetails {
+	switch {
+	case a == nil && b == nil:
+		return StateChangeDetails{}
+	case a == nil:
+		return StateChangeDetails{
+			TypeChanged:     b.Type != EntryStateTypeRemove,
+			ContentsChanged: len(b.ContentsSHA256) != 0,
+			ModeChanged:     b.Mode.Perm() != 0,
+		}
+	case b == nil:
+		return StateChangeDetails{
+			TypeChanged:     a.Type != EntryStateTypeRemove,
+			ContentsChanged: len(a.ContentsSHA256) != 0,
+			ModeChanged:     a.Mode.Perm() != 0,
+		}
+	}
+	details := StateChangeDetails{}
+	if a.Type != b.Type {
+		details.TypeChanged = true
+	}
+	if !bytes.Equal(a.ContentsSHA256, b.ContentsSHA256) {
+		details.ContentsChanged = true
+	}
+	if runtime.GOOS != "windows" && a.Mode.Perm() != b.Mode.Perm() {
+		details.ModeChanged = true
+	}
+	return details
+}
+
 // StateComparisonResult represents the result of comparing three entry states.
 type StateComparisonResult struct {
 	TargetMatchesActual  bool
 	LastWrittenMatchesActual bool
 	SilentUpdateNeeded   bool
 	ApplyNeeded          bool
+	TargetVsActual       StateChangeDetails
+	LastWrittenVsActual  StateChangeDetails
 }
 
 // CompareStates compares targetEntryState, lastWrittenEntryState, and actualEntryState
@@ -104,5 +148,95 @@ func CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState *En
 		LastWrittenMatchesActual: lastWrittenMatchesActual,
 		SilentUpdateNeeded:      targetMatchesActual && !lastWrittenMatchesActual,
 		ApplyNeeded:             !targetMatchesActual,
+		TargetVsActual:          DetectChanges(targetEntryState, actualEntryState),
+		LastWrittenVsActual:     DetectChanges(lastWrittenEntryState, actualEntryState),
 	}
+}
+
+// TextConvResult holds the result of a textconv operation, including any error.
+type TextConvResult struct {
+	ConvertedContents []byte
+	Converted         bool
+	Err               error
+}
+
+// StateDecision represents the complete, unified decision for a single target
+// entry. It is produced once per entry and consumed by apply, diff, status, and
+// verify commands to ensure consistent behavior.
+type StateDecision struct {
+	TargetRelPath          RelPath
+	TargetEntryState       *EntryState
+	LastWrittenEntryState  *EntryState
+	ActualEntryState       *EntryState
+	Comparison             StateComparisonResult
+	FromTextConvResult     TextConvResult
+	ToTextConvResult       TextConvResult
+	SkipApplyResult        bool
+	SkipApplyErr           error
+
+	TargetIsNil bool
+	ActualIsNil bool
+	TargetIsEmpty bool
+
+	NeedApply          bool
+	NeedSilentUpdate   bool
+	NeedReportDrift    bool
+	NeedUpdateLastWritten bool
+}
+
+// MakeStateDecision produces a single, authoritative StateDecision for a
+// target entry. All commands (apply, diff, status, verify) should use this
+// function to ensure consistent behavior across the codebase.
+func MakeStateDecision(
+	targetRelPath RelPath,
+	targetEntryState, lastWrittenEntryState, actualEntryState *EntryState,
+	skipApplyResult bool,
+	skipApplyErr error,
+	textConvFunc func(path string, data []byte) ([]byte, bool, error),
+) StateDecision {
+	decision := StateDecision{
+		TargetRelPath:         targetRelPath,
+		TargetEntryState:      targetEntryState,
+		LastWrittenEntryState: lastWrittenEntryState,
+		ActualEntryState:      actualEntryState,
+		SkipApplyResult:       skipApplyResult,
+		SkipApplyErr:          skipApplyErr,
+		TargetIsNil:           targetEntryState == nil,
+		ActualIsNil:           actualEntryState == nil,
+	}
+
+	if targetEntryState != nil {
+		decision.TargetIsEmpty = targetEntryState.Type == EntryStateTypeRemove ||
+			(targetEntryState.Type == EntryStateTypeFile && len(targetEntryState.ContentsSHA256) == 0)
+	}
+
+	decision.Comparison = CompareStates(targetEntryState, lastWrittenEntryState, actualEntryState)
+
+	if textConvFunc != nil && actualEntryState != nil && len(actualEntryState.contents) != 0 {
+		converted, convertedFlag, err := textConvFunc(targetRelPath.String(), actualEntryState.contents)
+		decision.FromTextConvResult = TextConvResult{
+			ConvertedContents: converted,
+			Converted:         convertedFlag,
+			Err:               err,
+		}
+	}
+
+	if textConvFunc != nil && targetEntryState != nil && len(targetEntryState.contents) != 0 {
+		converted, convertedFlag, err := textConvFunc(targetRelPath.String(), targetEntryState.contents)
+		decision.ToTextConvResult = TextConvResult{
+			ConvertedContents: converted,
+			Converted:         convertedFlag,
+			Err:               err,
+		}
+	}
+
+	decision.NeedSilentUpdate = decision.Comparison.SilentUpdateNeeded
+	decision.NeedApply = decision.Comparison.ApplyNeeded && !skipApplyResult
+	decision.NeedReportDrift = !decision.Comparison.TargetMatchesActual ||
+		decision.FromTextConvResult.Err != nil ||
+		decision.ToTextConvResult.Err != nil
+	decision.NeedUpdateLastWritten = (decision.NeedApply || decision.NeedSilentUpdate) &&
+		!skipApplyResult
+
+	return decision
 }

@@ -651,6 +651,7 @@ type applyArgsOptions struct {
 	recursive    bool
 	umask        fs.FileMode
 	preApplyFunc chezmoi.PreApplyFunc
+	textConvFunc func(path string, data []byte) ([]byte, bool, error)
 }
 
 // applyArgs is the core of all commands that make changes to a target system.
@@ -744,11 +745,13 @@ func (c *Config) applyArgs(
 		Filter:       options.filter,
 		PreApplyFunc: options.preApplyFunc,
 		Umask:        options.umask,
+		TextConvFunc: options.textConvFunc,
 	}
 
 	keptGoingAfterErr := false
 	for _, targetRelPath := range targetRelPaths {
-		switch err := sourceState.Apply(targetSystem, c.destSystem, c.persistentState, targetDirAbsPath, targetRelPath, applyOptions); {
+		entryApplyOptions := applyOptions
+		switch err := sourceState.Apply(targetSystem, c.destSystem, c.persistentState, targetDirAbsPath, targetRelPath, entryApplyOptions); {
 		case errors.Is(err, fs.SkipDir):
 			continue
 		case err != nil:
@@ -1114,10 +1117,12 @@ func (c *Config) decodeConfigMap(configMap map[string]any, configFile *ConfigFil
 // defaultPreApplyFunc is the default pre-apply function. If the target entry
 // has changed since chezmoi last wrote it then it prompts the user for the
 // action to take.
-func (c *Config) defaultPreApplyFunc(
-	targetRelPath chezmoi.RelPath,
-	targetEntryState, lastWrittenEntryState, actualEntryState *chezmoi.EntryState,
-) error {
+func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
+	targetRelPath := decision.TargetRelPath
+	targetEntryState := decision.TargetEntryState
+	lastWrittenEntryState := decision.LastWrittenEntryState
+	actualEntryState := decision.ActualEntryState
+
 	c.logger.Info("defaultPreApplyFunc",
 		chezmoilog.Stringer("targetRelPath", targetRelPath),
 		slog.Any("targetEntryState", targetEntryState),
@@ -1128,39 +1133,45 @@ func (c *Config) defaultPreApplyFunc(
 	switch {
 	case c.force:
 		return nil
-	case targetEntryState.Equivalent(actualEntryState):
+	case !decision.NeedReportDrift:
 		return nil
 	}
 
-	// Prepare decision for which kind of prompt we need (if any)
+	if decision.FromTextConvResult.Err != nil {
+		c.errorf("%s: textconv from actual failed: %v\n", targetRelPath, decision.FromTextConvResult.Err)
+	}
+	if decision.ToTextConvResult.Err != nil {
+		c.errorf("%s: textconv to target failed: %v\n", targetRelPath, decision.ToTextConvResult.Err)
+	}
+
 	type promptMode int
 	const (
-		promptNone     promptMode = iota
-		promptYesNoAll            // yes/no/all/quit (just ask, don't indicate if there is a conflict)
-		promptConflict            // overwrite/all-overwrite/skip/quit (conflict-specific prompt)
+		promptNone promptMode = iota
+		promptYesNoAll
+		promptConflict
 	)
 	mode := promptNone
 
-	targetDirty := lastWrittenEntryState != nil && !lastWrittenEntryState.Equivalent(actualEntryState)
-	targetPreExisting := lastWrittenEntryState == nil && actualEntryState.Type != chezmoi.EntryStateTypeRemove
+	targetDirty := lastWrittenEntryState != nil && !decision.Comparison.LastWrittenMatchesActual
+	targetPreExisting := lastWrittenEntryState == nil &&
+		actualEntryState != nil && actualEntryState.Type != chezmoi.EntryStateTypeRemove
 
-	// Select prompt mode based on command line flag
 	switch {
-	case c.Interactive: // Prompt no matter what
+	case c.Interactive:
 		mode = promptYesNoAll
-	case c.LessInteractive: // Prompt if target is dirty or pre-existing (i.e., only overwrite what chezmoi has written)
+	case c.LessInteractive:
 		if targetDirty || targetPreExisting {
 			mode = promptConflict
 		}
-	default: // Prompt in *some* cases of a dirty target:
+	default:
 		switch {
-		case targetEntryState.Overwrite():
+		case targetEntryState != nil && targetEntryState.Overwrite():
 			mode = promptNone
-		case targetEntryState.Type == chezmoi.EntryStateTypeScript:
+		case targetEntryState != nil && targetEntryState.Type == chezmoi.EntryStateTypeScript:
 			mode = promptNone
 		case lastWrittenEntryState == nil:
 			mode = promptNone
-		case lastWrittenEntryState.Equivalent(actualEntryState):
+		case decision.Comparison.LastWrittenMatchesActual:
 			mode = promptNone
 		case targetDirty:
 			mode = promptConflict
@@ -1171,9 +1182,16 @@ func (c *Config) defaultPreApplyFunc(
 		return nil
 	}
 
-	// Now prompt based on choice made above
-	actualContents := actualEntryState.Contents()
-	targetContents := targetEntryState.Contents()
+	var actualContents, targetContents []byte
+	var actualMode, targetMode fs.FileMode
+	if actualEntryState != nil {
+		actualContents = actualEntryState.Contents()
+		actualMode = actualEntryState.Mode
+	}
+	if targetEntryState != nil {
+		targetContents = targetEntryState.Contents()
+		targetMode = targetEntryState.Mode
+	}
 	var choices []string
 	if actualContents != nil || targetContents != nil {
 		choices = append(choices, "diff")
@@ -1198,8 +1216,8 @@ func (c *Config) defaultPreApplyFunc(
 		case choice == "diff":
 			if err := c.diffFile(
 				targetRelPath,
-				c.DestDirAbsPath.Join(targetRelPath), actualContents, actualEntryState.Mode,
-				chezmoi.EmptyAbsPath, targetContents, targetEntryState.Mode,
+				c.DestDirAbsPath.Join(targetRelPath), actualContents, actualMode,
+				chezmoi.EmptyAbsPath, targetContents, targetMode,
 			); err != nil {
 				return err
 			}
@@ -1208,8 +1226,6 @@ func (c *Config) defaultPreApplyFunc(
 		case choice == "no":
 			return fs.SkipDir
 		case choice == "all":
-			// Delicate difference to all-overwrite (mainly for backwards compatibility): Disabling --interactive means
-			// we still prompt for dirty files, whereas all-overwrite adds --force to really prompt no more.
 			c.Interactive = false
 			return nil
 		case choice == "overwrite":
