@@ -200,27 +200,6 @@ func (c *Config) runAddCmd(cmd *cobra.Command, args []string, sourceState *chezm
 		return fmt.Errorf("%s: invalid severity", severity)
 	}
 
-	if c.sourcePath {
-		convertedArgs := make([]string, 0, len(args))
-		for _, arg := range args {
-			argAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
-			if err != nil {
-				return err
-			}
-			targetRelPath, err := chezmoi.SourceAbsPathToTargetRelPath(
-				c.sourceSystem,
-				c.SourceDirAbsPath,
-				argAbsPath,
-				c.encryption.EncryptedSuffix(),
-			)
-			if err != nil {
-				return err
-			}
-			convertedArgs = append(convertedArgs, c.DestDirAbsPath.Join(targetRelPath).String())
-		}
-		args = convertedArgs
-	}
-
 	onNotExist := onNotExistError
 	if c.Add.new {
 		onNotExist = onNotExistAdd

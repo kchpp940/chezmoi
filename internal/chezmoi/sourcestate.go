@@ -1405,19 +1405,78 @@ func (s *SourceState) TargetRelPaths() []RelPath {
 	return targetRelPaths
 }
 
-// TargetRelPathsForSourcePathsOptions are options for SourceState.TargetRelPathsForSourcePaths.
-type TargetRelPathsForSourcePathsOptions struct {
+// TargetRelPathsOptions are options for SourceState.TargetRelPathsForTargetPaths
+// and SourceState.TargetRelPathsForSourcePaths.
+type TargetRelPathsOptions struct {
 	MustBeInSourceState bool
 	MustNotBeExternal   bool
 	Recursive           bool
 	DestSystem          System
 	DestDirAbsPath      AbsPath
+	ParentDirs          bool
+}
+
+// TargetRelPathsForTargetPaths returns the target relative paths for the given
+// target relative paths. It supports recursing into subdirectories, adding
+// parent directories, and de-duplicating and sorting the result.
+func (s *SourceState) TargetRelPathsForTargetPaths(targetRelPaths []RelPath, options TargetRelPathsOptions) ([]RelPath, error) {
+	var result []RelPath
+	for _, targetRelPath := range targetRelPaths {
+		sourceStateEntry := s.Get(targetRelPath)
+		if sourceStateEntry == nil {
+			return nil, fmt.Errorf("%s: not managed", targetRelPath)
+		}
+		if options.MustBeInSourceState {
+			if _, ok := sourceStateEntry.(*SourceStateRemove); ok {
+				return nil, fmt.Errorf("%s: not in source state", targetRelPath)
+			}
+		}
+		if options.MustNotBeExternal {
+			targetStateEntry, err := sourceStateEntry.TargetStateEntry(options.DestSystem, options.DestDirAbsPath.Join(targetRelPath))
+			if err != nil {
+				return nil, err
+			}
+			if targetStateEntry.SourceAttr().External {
+				return nil, fmt.Errorf("%s: is an external", targetRelPath)
+			}
+		}
+		result = append(result, targetRelPath)
+		if options.Recursive {
+			parentRelPath := targetRelPath
+			for _, trp := range s.TargetRelPaths() {
+				if _, err := trp.TrimDirPrefix(parentRelPath); err == nil {
+					result = append(result, trp)
+				}
+			}
+		}
+	}
+
+	if len(result) == 0 {
+		return nil, nil
+	}
+
+	slices.SortFunc(result, CompareRelPaths)
+	n := 1
+	for i := 1; i < len(result); i++ {
+		if result[i] != result[i-1] {
+			result[n] = result[i]
+			n++
+		}
+	}
+	result = result[:n]
+
+	if options.ParentDirs {
+		result = ParentRelPaths(result)
+	}
+
+	return result, nil
 }
 
 // TargetRelPathsForSourcePaths returns the target relative paths for the given
 // source relative paths. It supports matching directories, recursing into
-// subdirectories, and de-duplicating and sorting the result.
-func (s *SourceState) TargetRelPathsForSourcePaths(sourceRelPaths []RelPath, options TargetRelPathsForSourcePathsOptions) ([]RelPath, error) {
+// subdirectories, adding parent directories, and de-duplicating and sorting
+// the result.
+func (s *SourceState) TargetRelPathsForSourcePaths(sourceRelPaths []RelPath, options TargetRelPathsOptions) ([]RelPath, error) {
 	targetRelPathsBySourceRelPath := make(map[RelPath]RelPath)
 	sourceStateEntriesBySourceRelPath := make(map[RelPath]SourceStateEntry)
 	_ = s.ForEach(
@@ -1480,7 +1539,13 @@ func (s *SourceState) TargetRelPathsForSourcePaths(sourceRelPaths []RelPath, opt
 			n++
 		}
 	}
-	return targetRelPaths[:n], nil
+	targetRelPaths = targetRelPaths[:n]
+
+	if options.ParentDirs {
+		targetRelPaths = ParentRelPaths(targetRelPaths)
+	}
+
+	return targetRelPaths, nil
 }
 
 // TemplateData returns a copy of s's template data.

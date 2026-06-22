@@ -722,24 +722,25 @@ func (c *Config) applyArgs(
 	switch {
 	case len(args) == 0:
 		targetRelPaths = sourceState.TargetRelPaths()
+		if options.parentDirs {
+			targetRelPaths = chezmoi.ParentRelPaths(targetRelPaths)
+		}
 	case c.sourcePath:
 		targetRelPaths, err = c.targetRelPathsBySourcePath(sourceState, args, targetRelPathsOptions{
-			recursive: options.recursive,
+			recursive:  options.recursive,
+			parentDirs: options.parentDirs,
 		})
 		if err != nil {
 			return err
 		}
 	default:
 		targetRelPaths, err = c.targetRelPaths(sourceState, args, targetRelPathsOptions{
-			recursive: options.recursive,
+			recursive:  options.recursive,
+			parentDirs: options.parentDirs,
 		})
 		if err != nil {
 			return err
 		}
-	}
-
-	if options.parentDirs {
-		targetRelPaths = prependParentRelPaths(targetRelPaths)
 	}
 
 	applyOptions := chezmoi.ApplyOptions{
@@ -2938,6 +2939,7 @@ type targetRelPathsOptions struct {
 	mustBeInSourceState bool
 	mustNotBeExternal   bool
 	recursive           bool
+	parentDirs          bool
 }
 
 // targetRelPaths returns the target relative paths for each target path in
@@ -2957,51 +2959,16 @@ func (c *Config) targetRelPaths(
 		if err != nil {
 			return nil, err
 		}
-		sourceStateEntry := sourceState.Get(targetRelPath)
-		if sourceStateEntry == nil {
-			return nil, fmt.Errorf("%s: not managed", arg)
-		}
-		if options.mustBeInSourceState {
-			if _, ok := sourceStateEntry.(*chezmoi.SourceStateRemove); ok {
-				return nil, fmt.Errorf("%s: not in source state", arg)
-			}
-		}
-		if options.mustNotBeExternal {
-			targetStateEntry, err := sourceStateEntry.TargetStateEntry(c.destSystem, c.DestDirAbsPath.Join(targetRelPath))
-			if err != nil {
-				return nil, err
-			}
-			if targetStateEntry.SourceAttr().External {
-				return nil, fmt.Errorf("%s: is an external", arg)
-			}
-		}
 		targetRelPaths = append(targetRelPaths, targetRelPath)
-		if options.recursive {
-			parentRelPath := targetRelPath
-			// FIXME we should not call s.TargetRelPaths() here - risk of
-			// accidentally quadratic
-			for _, targetRelPath := range sourceState.TargetRelPaths() {
-				if _, err := targetRelPath.TrimDirPrefix(parentRelPath); err == nil {
-					targetRelPaths = append(targetRelPaths, targetRelPath)
-				}
-			}
-		}
 	}
-
-	if len(targetRelPaths) == 0 {
-		return nil, nil
-	}
-
-	// Sort and de-duplicate targetRelPaths in place.
-	slices.SortFunc(targetRelPaths, chezmoi.CompareRelPaths)
-	n := 1
-	for i := 1; i < len(targetRelPaths); i++ {
-		if targetRelPaths[i] != targetRelPaths[i-1] {
-			targetRelPaths[n] = targetRelPaths[i]
-			n++
-		}
-	}
-	return targetRelPaths[:n], nil
+	return sourceState.TargetRelPathsForTargetPaths(targetRelPaths, chezmoi.TargetRelPathsOptions{
+		MustBeInSourceState: options.mustBeInSourceState,
+		MustNotBeExternal:   options.mustNotBeExternal,
+		Recursive:           options.recursive,
+		DestSystem:          c.destSystem,
+		DestDirAbsPath:      c.DestDirAbsPath,
+		ParentDirs:          options.parentDirs,
+	})
 }
 
 // targetRelPathsBySourcePath returns the target relative paths for each arg in
@@ -3019,12 +2986,13 @@ func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, ar
 		}
 		sourceRelPaths = append(sourceRelPaths, sourceRelPath)
 	}
-	return sourceState.TargetRelPathsForSourcePaths(sourceRelPaths, chezmoi.TargetRelPathsForSourcePathsOptions{
+	return sourceState.TargetRelPathsForSourcePaths(sourceRelPaths, chezmoi.TargetRelPathsOptions{
 		MustBeInSourceState: options.mustBeInSourceState,
 		MustNotBeExternal:   options.mustNotBeExternal,
 		Recursive:           options.recursive,
 		DestSystem:          c.destSystem,
 		DestDirAbsPath:      c.DestDirAbsPath,
+		ParentDirs:          options.parentDirs,
 	})
 }
 
