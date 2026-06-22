@@ -864,29 +864,69 @@ func (c *Config) colorAutoFunc() bool {
 
 // createAndReloadConfigFile creates a config file if it there is a config file
 // template, reloads the configuration, and ensures all computed state is
-// consistent. The initialization order is strictly defined:
+// consistent. The reload proceeds in five distinct phases so that config
+// template rendering uses the existing (pre-init) context safely, and
+// subsequent operations only ever see the new configuration:
 //
-//  1. Reset all computed state (template data, source dir cache, source
-//     state, secret provider state)
-//  2. Refresh sourceDir, considering .chezmoiroot
-//  3. Execute config template and decode new configuration
-//  4. Recompute WorkingTreeAbsPath (sourceDir may have changed)
-//  5. Set up encryption from new config
-//  6. Rebuild template data with new config and sourceDir
-//  7. Set all environment variables (CHEZMOI_* + user-defined Env)
+//	Phase 1 — Prepare render context
+//	   Refresh sourceDir (considering .chezmoiroot) and update the existing
+//	   templateData so that the config template sees an accurate .sourceDir.
+//	   No state is invalidated yet: all existing template data, provider
+//	   sessions, cached values, and encryption context remain live so that
+//	   the config template can reference them (e.g. via `prompt*` funcs,
+//	   secret-backed template data, etc.).
 //
-// This ensures that after --init, subsequent reads of sourceDir, template
-// data, encryption context, and secret providers all see the same
-// consistent state.
+//	Phase 2 — Render config template safely
+//	   Execute the config template using the still-valid pre-init context and
+//	   obtain the raw new config file contents.
+//
+//	Phase 3 — Validate, persist, and swap in new configuration
+//	   Decode the rendered contents into a local ConfigFile for validation,
+//	   write the contents to disk, update persistentState, then decode the
+//	   new config into c.ConfigFile. After this point, c.ConfigFile reflects
+//	   the new configuration, but all computed state (template data,
+//	   sourceDir cache, sourceState, providers, encryption) still reflect
+//	   the old one.
+//
+//	Phase 4 — Invalidate *old* computed state
+//	   Now that the new config is in place, call resetComputedState() to
+//	   discard all caches built from the old configuration: template data,
+//	   sourceDir cache, source state, and every secret/password provider
+//	   reset via its own reset() method.
+//
+//	Phase 5 — Build derived state from the new configuration
+//	   Recompute WorkingTreeAbsPath (triggers a fresh sourceDir read using
+//	   the new SourceDirAbsPath + .chezmoiroot), set up encryption from the
+//	   new config, and finally rebuild template data + set all environment
+//	   variables in one pass. Any subsequent getSourceState() call will
+//	   construct a source state using only the new configuration.
+//
+// This ordering guarantees that `chezmoi init --apply` and
+// `chezmoi apply --init` both end up with sourceDir, template data,
+// encryption, secret providers, and environment variables derived
+// exclusively from the newly rendered configuration.
 func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
-	c.resetComputedState()
-
-	if _, err := c.getSourceDirAbsPath(&getSourceDirAbsPathOptions{
+	// ── Phase 1 ── Prepare render context ────────────────────────────────
+	//
+	// Refresh sourceDir to pick up .chezmoiroot, then patch the currently
+	// live templateData and CHEZMOI_SOURCE_DIR so that the config template
+	// in Phase 2 sees the correct sourceDir. We deliberately do NOT reset
+	// any other state yet.
+	sourceDirAbsPath, err := c.getSourceDirAbsPath(&getSourceDirAbsPathOptions{
 		refresh: true,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	if c.templateData != nil {
+		c.templateData.sourceDir = sourceDirAbsPath.String()
+	}
+	os.Setenv("CHEZMOI_SOURCE_DIR", sourceDirAbsPath.String())
 
+	// ── Phase 2 ── Render config template safely ─────────────────────────
+	//
+	// Rendering happens here, while all pre-init context (template data,
+	// provider sessions/caches, encryption, etc.) is still valid.
 	configTemplate, err := c.findConfigTemplate()
 	if err != nil {
 		return err
@@ -896,6 +936,10 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		if err := c.persistentState.Delete(chezmoi.ConfigStateBucket, configStateKey); err != nil {
 			return err
 		}
+		// No template to render; skip straight to Phase 4+5 so that any
+		// changes made outside the config template (e.g. .chezmoiroot) are
+		// still consistently reflected in derived state.
+		c.resetComputedState()
 		c.recomputeWorkingTreeAbsPath()
 		if err := c.setEncryption(); err != nil {
 			return err
@@ -908,6 +952,11 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		return err
 	}
 
+	// ── Phase 3 ── Validate, persist, and swap in new configuration ─────
+	//
+	// Decode into a temporary ConfigFile first (validation), then write
+	// the file and update persistent state, then replace c.ConfigFile with
+	// the decoded new configuration.
 	var configFile ConfigFile
 	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &configFile); err != nil {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
@@ -942,6 +991,19 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
 
+	// ── Phase 4 ── Invalidate *old* computed state ──────────────────────
+	//
+	// c.ConfigFile now holds the new configuration. Discard every cached
+	// value that was derived from the old configuration. From this point
+	// forward, nothing that depends on the old config will be reused.
+	c.resetComputedState()
+
+	// ── Phase 5 ── Build derived state from the new configuration ───────
+	//
+	// Recompute WorkingTreeAbsPath (this will re-run getSourceDirAbsPath
+	// using the new SourceDirAbsPath + a fresh read of .chezmoiroot because
+	// the sourceDir cache was cleared in Phase 4), then rebuild encryption,
+	// template data, and environment variables purely from the new config.
 	c.recomputeWorkingTreeAbsPath()
 
 	if err := c.setEncryption(); err != nil {
