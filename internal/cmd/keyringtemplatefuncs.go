@@ -17,6 +17,10 @@ type keyringData struct {
 	cache map[keyringKey]string
 }
 
+func (k *keyringData) reset() {
+	k.cache = nil
+}
+
 func (c *Config) keyringTemplateFunc(service, user string) string {
 	key := keyringKey{
 		service: service,

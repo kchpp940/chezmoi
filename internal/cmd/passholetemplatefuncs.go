@@ -18,11 +18,16 @@ type passholeCacheKey struct {
 }
 
 type passholeConfig struct {
-	Command  string   `json:"command" mapstructure:"command" yaml:"command"`
-	Args     []string `json:"args"    mapstructure:"args"    yaml:"args"`
-	Prompt   bool     `json:"prompt"  mapstructure:"prompt"  yaml:"prompt"`
+	Command  string   `json:"command" mapstructure="command" yaml="command"`
+	Args     []string `json:"args"    mapstructure="args"    yaml="args"`
+	Prompt   bool     `json:"prompt"  mapstructure="prompt"  yaml="prompt"`
 	cache    map[passholeCacheKey]string
 	password string
+}
+
+func (p *passholeConfig) reset() {
+	p.cache = nil
+	p.password = ""
 }
 
 var passholeMinVersion = semver.Version{Major: 1, Minor: 10, Patch: 0}

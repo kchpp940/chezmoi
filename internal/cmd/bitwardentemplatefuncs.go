@@ -18,6 +18,11 @@ type bitwardenConfig struct {
 	outputCache map[string][]byte
 }
 
+func (b *bitwardenConfig) reset() {
+	b.session = ""
+	b.outputCache = nil
+}
+
 func (c *Config) bitwardenAttachmentTemplateFunc(name, itemID string) string {
 	must(c.bitwardenMaybeUnlock())
 	return string(mustValue(c.bitwardenOutput([]string{"get", "attachment", name, "--itemid", itemID, "--raw"})))

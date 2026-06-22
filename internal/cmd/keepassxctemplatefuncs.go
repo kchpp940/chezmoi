@@ -34,11 +34,11 @@ type keepassxcAttributeCacheKey struct {
 }
 
 type keepassxcConfig struct {
-	Command         string          `json:"command"  mapstructure:"command"  yaml:"command"`
-	Database        chezmoi.AbsPath `json:"database" mapstructure:"database" yaml:"database"`
-	Mode            keepassxcMode   `json:"mode"     mapstructure:"mode"     yaml:"mode"`
-	Args            []string        `json:"args"     mapstructure:"args"     yaml:"args"`
-	Prompt          bool            `json:"prompt"   mapstructure:"prompt"   yaml:"prompt"`
+	Command         string          `json:"command"  mapstructure="command"  yaml="command"`
+	Database        chezmoi.AbsPath `json:"database" mapstructure="database" yaml="database"`
+	Mode            keepassxcMode   `json:"mode"     mapstructure="mode"     yaml="mode"`
+	Args            []string        `json:"args"     mapstructure="args"     yaml="args"`
+	Prompt          bool            `json:"prompt"   mapstructure="prompt"   yaml="prompt"`
 	cmd             *exec.Cmd
 	console         *expect.Console
 	promptStr       string
@@ -46,6 +46,16 @@ type keepassxcConfig struct {
 	attachmentCache map[string]map[string]string
 	attributeCache  map[keepassxcAttributeCacheKey]string
 	password        string
+}
+
+func (k *keepassxcConfig) reset() {
+	k.cmd = nil
+	k.console = nil
+	k.promptStr = ""
+	k.cache = nil
+	k.attachmentCache = nil
+	k.attributeCache = nil
+	k.password = ""
 }
 
 var (

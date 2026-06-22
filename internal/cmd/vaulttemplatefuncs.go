@@ -13,6 +13,10 @@ type vaultConfig struct {
 	cache   map[string]any
 }
 
+func (v *vaultConfig) reset() {
+	v.cache = nil
+}
+
 func (c *Config) vaultTemplateFunc(key string) any {
 	if data, ok := c.Vault.cache[key]; ok {
 		return data

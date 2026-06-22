@@ -31,14 +31,23 @@ var (
 )
 
 type gopassConfig struct {
-	Command       string          `json:"command" mapstructure:"command" yaml:"command"`
-	Mode          gopassMode      `json:"mode"    mapstructure:"mode"    yaml:"mode"`
+	Command       string          `json:"command" mapstructure="command" yaml="command"`
+	Mode          gopassMode      `json:"mode"    mapstructure="mode"    yaml="mode"`
 	ctx           context.Context //nolint:containedctx
 	client        *api.Gopass
 	clientErr     error
 	passwordCache map[string][]byte
 	cache         map[string]string
 	rawCache      map[string][]byte
+}
+
+func (g *gopassConfig) reset() {
+	g.ctx = nil
+	g.client = nil
+	g.clientErr = nil
+	g.passwordCache = nil
+	g.cache = nil
+	g.rawCache = nil
 }
 
 func (c *Config) gopassTemplateFunc(id string) string {

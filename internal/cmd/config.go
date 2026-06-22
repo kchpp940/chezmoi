@@ -2779,73 +2779,13 @@ func (c *Config) resetComputedState() {
 // providers. This is needed when configuration changes during --init, as the
 // provider configuration (command paths, URLs, regions, etc.) may have
 // changed, making previously cached clients, sessions, or values invalid.
+// Provider state is reset by dispatching to each provider's own reset()
+// method, so that the knowledge of which fields need clearing lives with
+// the provider definition rather than being duplicated here.
 func (c *Config) resetSecretProviderState() {
-	c.Vault.cache = nil
-
-	c.AWSSecretsManager.svc = nil
-	c.AWSSecretsManager.cache = nil
-	c.AWSSecretsManager.jsonCache = nil
-
-	c.AzureKeyVault.vaults = nil
-	c.AzureKeyVault.cred = nil
-
-	c.Bitwarden.session = ""
-	c.Bitwarden.outputCache = nil
-
-	c.BitwardenSecrets.outputCache = nil
-
-	c.Dashlane.cacheNote = nil
-	c.Dashlane.cachePassword = nil
-
-	c.Doppler.outputCache = nil
-
-	c.Ejson.cache = nil
-
-	c.Gopass.ctx = nil
-	c.Gopass.client = nil
-	c.Gopass.clientErr = nil
-	c.Gopass.passwordCache = nil
-	c.Gopass.cache = nil
-	c.Gopass.rawCache = nil
-
-	c.Keepassxc.cmd = nil
-	c.Keepassxc.console = nil
-	c.Keepassxc.promptStr = ""
-	c.Keepassxc.cache = nil
-	c.Keepassxc.attachmentCache = nil
-	c.Keepassxc.attributeCache = nil
-	c.Keepassxc.password = ""
-
-	c.Keeper.outputCache = nil
-
-	c.Lastpass.cache = nil
-
-	c.Onepassword.outputCache = nil
-	c.Onepassword.sessionTokens = nil
-	c.Onepassword.accountMap = nil
-	c.Onepassword.accountMapErr = nil
-	c.Onepassword.modeChecked = false
-
-	c.Pass.cache = nil
-
-	c.Passhole.cache = nil
-	c.Passhole.password = ""
-
-	c.ProtonPass.outputCache = nil
-
-	c.RBW.outputCache = nil
-
-	c.Secret.cache = nil
-
-	c.gitHub.client = nil
-	c.gitHub.clientErr = nil
-	c.gitHub.keysCache = nil
-	c.gitHub.versionReleaseCache = nil
-	c.gitHub.latestReleaseCache = nil
-	c.gitHub.releasesCache = nil
-	c.gitHub.tagsCache = nil
-
-	c.keyring.cache = nil
+	c.ConfigFile.resetSecretProviders()
+	c.gitHub.reset()
+	c.keyring.reset()
 }
 
 // run runs name with args in dir.
@@ -3423,6 +3363,33 @@ func newConfigFile(bds *xdg.BaseDirectorySpecification) ConfigFile {
 			recursive: true,
 		},
 	}
+}
+
+// resetSecretProviders resets in-memory state for all password/secret
+// providers embedded in ConfigFile. Each provider is responsible for
+// clearing its own caches, clients, sessions, etc. via its reset() method.
+// This keeps the list of which state needs clearing together with each
+// provider's definition, making it easy to update when adding new cache
+// fields to a provider.
+func (f *ConfigFile) resetSecretProviders() {
+	f.AWSSecretsManager.reset()
+	f.AzureKeyVault.reset()
+	f.Bitwarden.reset()
+	f.BitwardenSecrets.reset()
+	f.Dashlane.reset()
+	f.Doppler.reset()
+	f.Ejson.reset()
+	f.Gopass.reset()
+	f.Keepassxc.reset()
+	f.Keeper.reset()
+	f.Lastpass.reset()
+	f.Onepassword.reset()
+	f.Pass.reset()
+	f.Passhole.reset()
+	f.ProtonPass.reset()
+	f.RBW.reset()
+	f.Secret.reset()
+	f.Vault.reset()
 }
 
 func (f *ConfigFile) toMap() map[string]any {

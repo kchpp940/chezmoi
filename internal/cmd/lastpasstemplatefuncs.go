@@ -23,8 +23,12 @@ var (
 )
 
 type lastpassConfig struct {
-	Command string `json:"command" mapstructure:"command" yaml:"command"`
+	Command string `json:"command" mapstructure="command" yaml="command"`
 	cache   map[string][]map[string]any
+}
+
+func (l *lastpassConfig) reset() {
+	l.cache = nil
 }
 
 func (c *Config) lastpassTemplateFunc(id string) []map[string]any {

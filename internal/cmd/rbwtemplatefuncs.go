@@ -12,8 +12,12 @@ import (
 )
 
 type rbwConfig struct {
-	Command     string `json:"command" mapstructure:"command" yaml:"command"`
+	Command     string `json:"command" mapstructure="command" yaml="command"`
 	outputCache map[string][]byte
+}
+
+func (r *rbwConfig) reset() {
+	r.outputCache = nil
 }
 
 var rbwMinVersion = semver.Version{Major: 1, Minor: 7, Patch: 0}
