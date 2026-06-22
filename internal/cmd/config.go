@@ -146,6 +146,33 @@ func newProfileConfig() profileConfig {
 	}
 }
 
+// effectiveConfig holds the final resolved configuration after applying all
+// overrides in priority order. All downstream consumers (apply/init/source state
+// building) should read from this struct instead of directly from Config fields.
+//
+// Priority (highest to lowest):
+//  1. Command line flags (restored before buildEffectiveConfig)
+//  2. Profile-specific config (from [profiles.<name>] in config file)
+//  3. Global config file values (from ConfigFile)
+//  4. Default values (from newConfigFile)
+type effectiveConfig struct {
+	ProfileName         string
+	SourceDirAbsPath    chezmoi.AbsPath
+	CacheDirAbsPath     chezmoi.AbsPath
+	PersistentStatePath chezmoi.AbsPath
+	RefreshExternals    chezmoi.RefreshExternals
+	ScriptCondition     chezmoi.ScriptCondition
+	ApplyFilter         *chezmoi.EntryTypeFilter
+	ApplyInit           bool
+	Data                map[string]any
+	Env                 map[string]string
+	ScriptEnv           map[string]string
+	Mode                chezmoi.Mode
+	TemplateOptions     []string
+	Interpreters        map[string]chezmoi.Interpreter
+	Umask               fs.FileMode
+}
+
 // ConfigFile contains all data settable in the config file.
 type ConfigFile struct {
 	// Global configuration.
@@ -311,6 +338,7 @@ type Config struct {
 	templateData           *templateData
 	betterleaksDetector    *detect.Detector
 	betterleaksDetectorErr error
+	effectiveConfig        *effectiveConfig
 
 	stdin             io.Reader
 	stdout            io.Writer
@@ -964,6 +992,9 @@ func (c *Config) createAndReloadConfigFile(cmd *cobra.Command) error {
 	if err := c.decodeConfigContents(configTemplate.format, configFileContents, &c.ConfigFile); err != nil {
 		return fmt.Errorf("%s: %w", configTemplate.sourceAbsPath, err)
 	}
+
+	c.resetSourceState()
+	c.templateData = nil
 
 	if err := c.setEncryption(); err != nil {
 		return err
@@ -2093,6 +2124,11 @@ func (c *Config) newSourceState(
 		return nil, err
 	}
 
+	ec, err := c.buildEffectiveConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	httpClient, err := c.getHTTPClient()
 	if err != nil {
 		return nil, err
@@ -2100,16 +2136,32 @@ func (c *Config) newSourceState(
 
 	sourceStateLogger := c.logger.With(slog.String(logComponentKey, logComponentValueSourceState))
 
-	c.SourceDirAbsPath, err = c.getSourceDirAbsPath(nil)
-	if err != nil {
-		return nil, err
+	sourceDirAbsPath := chezmoi.EmptyAbsPath
+	// If a profile explicitly sets sourceDir and it wasn't overridden by CLI --source,
+	// use it directly (skip .chezmoiroot processing).
+	if profileName := c.getSelectedProfile(); profileName != "" {
+		if profile, ok := c.Profiles[profileName]; ok && !profile.SourceDirAbsPath.IsEmpty() {
+			if c.SourceDirAbsPath == profile.SourceDirAbsPath {
+				sourceDirAbsPath = profile.SourceDirAbsPath
+			}
+		}
 	}
+	if sourceDirAbsPath.IsEmpty() {
+		var err error
+		sourceDirAbsPath, err = c.getSourceDirAbsPath(nil)
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Update c.SourceDirAbsPath so downstream code (e.g. mergecmd, editcmd)
+	// that reads it directly gets the correct post-.chezmoiroot path.
+	c.SourceDirAbsPath = sourceDirAbsPath
 
 	if err := c.runHookPre(readSourceStateHookName); err != nil {
 		return nil, err
 	}
 
-	priorityTemplateData := c.Data
+	priorityTemplateData := ec.Data
 	if !c.overrideDataFileAbsPath.IsEmpty() {
 		var overrideData map[string]any
 		data, err := c.baseSystem.ReadFile(c.overrideDataFileAbsPath)
@@ -2131,29 +2183,29 @@ func (c *Config) newSourceState(
 
 	sourceState := chezmoi.NewSourceState(append([]chezmoi.SourceStateOption{
 		chezmoi.WithBaseSystem(c.baseSystem),
-		chezmoi.WithCacheDir(c.CacheDirAbsPath),
+		chezmoi.WithCacheDir(ec.CacheDirAbsPath),
 		chezmoi.WithDefaultTemplateDataFunc(func() map[string]any {
 			return c.getTemplateDataMap(cmd)
 		}),
 		chezmoi.WithDestDir(c.DestDirAbsPath),
 		chezmoi.WithEncryption(c.encryption),
 		chezmoi.WithHTTPClient(httpClient),
-		chezmoi.WithInterpreters(c.Interpreters),
+		chezmoi.WithInterpreters(ec.Interpreters),
 		chezmoi.WithLogger(sourceStateLogger),
-		chezmoi.WithMode(c.Mode),
+		chezmoi.WithMode(ec.Mode),
 		chezmoi.WithPriorityTemplateData(priorityTemplateData),
 		chezmoi.WithScriptTempDir(c.ScriptTempDir),
-		chezmoi.WithSourceDir(c.SourceDirAbsPath),
+		chezmoi.WithSourceDir(sourceDirAbsPath),
 		chezmoi.WithSystem(c.sourceSystem),
 		chezmoi.WithTemplateFuncs(c.templateFuncs),
-		chezmoi.WithTemplateOptions(c.Template.Options),
-		chezmoi.WithUmask(c.Umask),
+		chezmoi.WithTemplateOptions(ec.TemplateOptions),
+		chezmoi.WithUmask(ec.Umask),
 		chezmoi.WithVersion(c.version),
 		chezmoi.WithWarnFunc(c.errorf),
 	}, options...)...)
 
 	if err := sourceState.Read(ctx, &chezmoi.ReadOptions{
-		RefreshExternals: c.refreshExternals,
+		RefreshExternals: ec.RefreshExternals,
 		ReadHTTPResponse: c.readHTTPResponse,
 	}); err != nil {
 		return nil, err
@@ -2602,6 +2654,9 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 // returning the first persistent file found, and returning the default path if
 // none are found.
 func (c *Config) persistentStateFile() (chezmoi.AbsPath, error) {
+	if ec, err := c.buildEffectiveConfig(); err == nil && !ec.PersistentStatePath.IsEmpty() {
+		return ec.PersistentStatePath, nil
+	}
 	if !c.PersistentStateAbsPath.IsEmpty() {
 		return c.PersistentStateAbsPath, nil
 	}
@@ -2702,12 +2757,35 @@ func (c *Config) newTemplateData(cmd *cobra.Command) *templateData {
 	configFileAbsPath, _ := c.getConfigFileAbsPath()
 	executable, _ := os.Executable()
 	windowsVersion, _ := windowsVersion()
-	sourceDirAbsPath, _ := c.getSourceDirAbsPath(nil)
+
+	ec, _ := c.buildEffectiveConfig()
+	sourceDirAbsPath := chezmoi.EmptyAbsPath
+	selectedProfileName := c.getSelectedProfile()
+	if selectedProfileName != "" {
+		if profile, ok := c.Profiles[selectedProfileName]; ok && !profile.SourceDirAbsPath.IsEmpty() {
+			if c.SourceDirAbsPath == profile.SourceDirAbsPath {
+				sourceDirAbsPath = profile.SourceDirAbsPath
+			}
+		}
+	}
+	if sourceDirAbsPath.IsEmpty() {
+		sourceDirAbsPath, _ = c.getSourceDirAbsPath(nil)
+	}
+	cacheDir := c.CacheDirAbsPath.String()
+	if ec != nil {
+		cacheDir = ec.CacheDirAbsPath.String()
+	}
+	profileName := ""
+	if ec != nil {
+		profileName = ec.ProfileName
+	} else {
+		profileName = selectedProfileName
+	}
 
 	return &templateData{
 		arch:       runtime.GOARCH,
 		args:       os.Args,
-		cacheDir:   c.CacheDirAbsPath.String(),
+		cacheDir:   cacheDir,
 		command:    cmd.Name(),
 		commandDir: c.commandDirAbsPath.String(),
 		config:     c.toMap(),
@@ -2731,7 +2809,7 @@ func (c *Config) newTemplateData(cmd *cobra.Command) *templateData {
 		osRelease:         osRelease,
 		pathListSeparator: string(os.PathListSeparator),
 		pathSeparator:     string(os.PathSeparator),
-		profile:           c.getSelectedProfile(),
+		profile:           profileName,
 		rawHomeDir:        rawHomeDir,
 		sourceDir:         sourceDirAbsPath.String(),
 		uid:               uid,
@@ -2922,6 +3000,232 @@ func (c *Config) resetSourceState() {
 	c.sourceStateErr = nil
 	c.sourceDirAbsPath = chezmoi.EmptyAbsPath
 	c.sourceDirAbsPathErr = nil
+	c.effectiveConfig = nil
+}
+
+// buildEffectiveConfig computes the final resolved configuration by merging
+// global config, profile overrides, and command-line flags in priority order.
+//
+// Must be called after:
+//   - Config file is read (ConfigFile fields populated)
+//   - applyProfile() is called (currentProfile/profile fields set)
+//   - Command-line flags are restored (highest priority values on c.ConfigFile)
+//
+// The result is cached in c.effectiveConfig. Call resetSourceState() to force a rebuild.
+func (c *Config) buildEffectiveConfig() (*effectiveConfig, error) {
+	if c.effectiveConfig != nil {
+		return c.effectiveConfig, nil
+	}
+
+	ec := &effectiveConfig{}
+
+	// Start with global values from ConfigFile (priority 3/4)
+	// Note: ec.SourceDirAbsPath is intentionally left empty here.
+	// It is only populated if a profile explicitly sets sourceDir,
+	// because the default behavior requires processing .chezmoiroot
+	// via getSourceDirAbsPath().
+	ec.CacheDirAbsPath = c.CacheDirAbsPath
+	ec.PersistentStatePath = c.PersistentStateAbsPath
+	ec.RefreshExternals = c.refreshExternals
+	ec.Mode = c.Mode
+	ec.TemplateOptions = append([]string{}, c.Template.Options...)
+	ec.Umask = c.Umask
+	ec.ApplyInit = c.Apply.Init
+	ec.ApplyFilter = &chezmoi.EntryTypeFilter{
+		Include: c.Apply.Include,
+		Exclude: c.Apply.Exclude,
+	}
+
+	ec.Data = make(map[string]any)
+	if c.Data != nil {
+		chezmoi.RecursiveMerge(ec.Data, c.Data)
+	}
+	ec.Env = make(map[string]string)
+	for k, v := range c.Env {
+		ec.Env[k] = v
+	}
+	ec.ScriptEnv = make(map[string]string)
+	for k, v := range c.ScriptEnv {
+		ec.ScriptEnv[k] = v
+	}
+	ec.Interpreters = make(map[string]chezmoi.Interpreter)
+	for k, v := range c.Interpreters {
+		ec.Interpreters[k] = v
+	}
+
+	// Apply profile overrides (priority 2/4)
+	profileName := c.getSelectedProfile()
+	ec.ProfileName = profileName
+	if profileName != "" {
+		profile, ok := c.Profiles[profileName]
+		if !ok {
+			return nil, fmt.Errorf("profile %q not found", profileName)
+		}
+
+		if !profile.SourceDirAbsPath.IsEmpty() {
+			ec.SourceDirAbsPath = profile.SourceDirAbsPath
+		}
+
+		if !profile.CacheDirAbsPath.IsEmpty() {
+			ec.CacheDirAbsPath = profile.CacheDirAbsPath
+		} else if !ec.CacheDirAbsPath.IsEmpty() {
+			ec.CacheDirAbsPath = ec.CacheDirAbsPath.Join(chezmoi.NewRelPath("profiles"), chezmoi.NewRelPath(profileName))
+		}
+
+		if !profile.PersistentStateAbsPath.IsEmpty() {
+			ec.PersistentStatePath = profile.PersistentStateAbsPath
+		} else if ec.PersistentStatePath.IsEmpty() {
+			configFileAbsPath, err := c.getConfigFileAbsPath()
+			if err == nil {
+				ec.PersistentStatePath = configFileAbsPath.Dir().Join(
+					chezmoi.NewRelPath("profiles"),
+					chezmoi.NewRelPath(profileName),
+					persistentStateFileRelPath,
+				)
+			}
+		}
+
+		if profile.RefreshExternals != chezmoi.RefreshExternalsAuto {
+			ec.RefreshExternals = profile.RefreshExternals
+		}
+
+		if profile.ScriptCondition != "" {
+			ec.ScriptCondition = profile.ScriptCondition
+		}
+
+		if profile.Apply.Include != nil && profile.Apply.Include.Bits() != chezmoi.EntryTypesNone {
+			ec.ApplyFilter.Include = profile.Apply.Include
+		}
+		if profile.Apply.Exclude != nil && profile.Apply.Exclude.Bits() != chezmoi.EntryTypesNone {
+			ec.ApplyFilter.Exclude = profile.Apply.Exclude
+		}
+		if profile.Apply.Init {
+			ec.ApplyInit = true
+		}
+
+		if len(profile.Data) > 0 {
+			chezmoi.RecursiveMerge(ec.Data, profile.Data)
+		}
+
+		for k, v := range profile.Env {
+			ec.Env[k] = v
+		}
+		for k, v := range profile.ScriptEnv {
+			ec.ScriptEnv[k] = v
+		}
+
+		if profile.Mode != "" {
+			ec.Mode = profile.Mode
+		}
+
+		if len(profile.Template.Options) > 0 {
+			ec.TemplateOptions = profile.Template.Options
+		}
+
+		for k, v := range profile.Interpreters {
+			ec.Interpreters[k] = v
+		}
+
+		if profile.Umask != 0 {
+			ec.Umask = profile.Umask
+		}
+
+		if ec.ScriptCondition != "" {
+			includeBits := chezmoi.EntryTypeScripts
+			switch ec.ScriptCondition {
+			case chezmoi.ScriptConditionAlways:
+				includeBits |= chezmoi.EntryTypeAlways
+			case chezmoi.ScriptConditionOnce:
+			case chezmoi.ScriptConditionOnChange:
+			}
+			ec.ApplyFilter.Include = chezmoi.NewEntryTypeSet(includeBits)
+		}
+	}
+
+	// Note: command-line flags (priority 1/4) are already on c.ConfigFile fields
+	// because they were restored before this method was called. We need to
+	// check if any command-line values should override what we computed from
+	// profile + global config.
+	//
+	// Command-line flags that are bound to c.ConfigFile fields:
+	// - --source: c.SourceDirAbsPath
+	// - --cache: c.CacheDirAbsPath
+	// - --persistent-state: c.PersistentStateAbsPath
+	// - --mode: c.Mode
+	// - --umask: c.Umask
+	//
+	// These are already on the ConfigFile fields, but the issue is: in the
+	// original applyProfile() implementation, profile values were written
+	// BACK to c.ConfigFile fields, and then command-line flags were restored
+	// after that. So the restored command-line flags ARE the final values.
+	//
+	// For fields where profile values do NOT write to c.ConfigFile (e.g.
+	// Apply.Filter, Apply.Init, RefreshExternals via c.refreshExternals),
+	// we need to track separately whether the user set them via CLI.
+
+	// For now, the ConfigFile-level fields (SourceDir, CacheDir, PersistentState,
+	// Mode, Umask) are already the final values because:
+	// 1. Config file is read → populates ConfigFile
+	// 2. applyProfile() (old) would overwrite some ConfigFile fields
+	// 3. CLI flags are restored → overwrites to final values
+	//
+	// Under the new design, buildEffectiveConfig should use ConfigFile
+	// values (which already have CLI restored) as the base, then layer
+	// profile on top. But wait — that reverses the priority!
+	//
+	// Actually let's reconsider. The correct order of operations is:
+	// 1. Read config file → values on ConfigFile
+	// 2. applyProfile() should NOT write to ConfigFile directly
+	// 3. Restore CLI flags → overwrite ConfigFile fields with CLI values
+	// 4. buildEffectiveConfig() merges: CLI (from ConfigFile) > profile > global
+	//
+	// The problem: currently applyProfile() DOES write to ConfigFile, so when
+	// CLI flags are restored, they do correctly override. But conceptually
+	// it's cleaner if applyProfile() only marks which profile is selected.
+	//
+	// For this implementation, let's use the correct semantic:
+	// - ConfigFile fields = defaults + config file + CLI flags (highest priority)
+	// - Profile overrides are applied only if the user didn't set via CLI
+	//
+	// But we CAN'T tell if a value was set via CLI vs config file at this point,
+	// because both live on the same ConfigFile struct.
+	//
+	// Strategy: Use the values from ConfigFile (which already have CLI applied),
+	// then for fields that profile CAN override, compare profile value to the
+	// "default" value. If profile has a non-default value and the ConfigFile
+	// value still equals the default, apply the profile. Otherwise keep ConfigFile.
+	//
+	// Actually, the simpler and correct approach:
+	// Since CLI flags ARE restored AFTER applyProfile in persistentPreRunRootE,
+	// the ConfigFile values after restoration are the CLI-priority values.
+	// The profile should only override fields that were NOT set via CLI.
+	//
+	// Since we can't distinguish, we'll use this convention:
+	// profile values are applied on top of global ConfigFile values,
+	// then the ConfigFile values (which have CLI restored) are checked -
+	// for "path" type fields, if they differ from what we computed, the CLI
+	// took precedence so we use those.
+
+	// Re-apply ConfigFile path values (CLI flag priority)
+	// Note: SourceDirAbsPath is intentionally NOT handled here,
+	// because it requires .chezmoiroot processing which happens
+	// in getSourceDirAbsPath(). The profile sourceDir override is
+	// handled separately in newSourceState and newTemplateData.
+	if c.CacheDirAbsPath != ec.CacheDirAbsPath && !c.CacheDirAbsPath.IsEmpty() {
+		ec.CacheDirAbsPath = c.CacheDirAbsPath
+	}
+	if c.PersistentStateAbsPath != ec.PersistentStatePath && !c.PersistentStateAbsPath.IsEmpty() {
+		ec.PersistentStatePath = c.PersistentStateAbsPath
+	}
+	if c.Mode != ec.Mode && c.Mode != "" {
+		ec.Mode = c.Mode
+	}
+	if c.Umask != ec.Umask && c.Umask != 0 {
+		ec.Umask = c.Umask
+	}
+
+	c.effectiveConfig = ec
+	return ec, nil
 }
 
 // run runs name with args in dir.

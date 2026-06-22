@@ -45,18 +45,23 @@ func (c *Config) newApplyCmd() *cobra.Command {
 }
 
 func (c *Config) runApplyCmd(cmd *cobra.Command, args []string) error {
-	filter := c.apply.filter
-	if c.profile != nil {
-		if c.profile.Apply.Include != nil && c.profile.Apply.Include.Bits() != chezmoi.EntryTypesNone {
-			filter.Include = c.profile.Apply.Include
-		}
-		if c.profile.Apply.Exclude != nil && c.profile.Apply.Exclude.Bits() != chezmoi.EntryTypesNone {
-			filter.Exclude = c.profile.Apply.Exclude
-		}
+	ec, err := c.buildEffectiveConfig()
+	if err != nil {
+		return err
 	}
-	init := c.apply.init
-	if c.profile != nil && c.profile.Apply.Init {
-		init = c.profile.Apply.Init
+	filter := &chezmoi.EntryTypeFilter{
+		Include: ec.ApplyFilter.Include,
+		Exclude: ec.ApplyFilter.Exclude,
+	}
+	if cmd.Flags().Changed("include") {
+		filter.Include = c.apply.filter.Include
+	}
+	if cmd.Flags().Changed("exclude") {
+		filter.Exclude = c.apply.filter.Exclude
+	}
+	init := ec.ApplyInit
+	if cmd.Flags().Changed("init") {
+		init = c.apply.init
 	}
 	return c.applyArgs(cmd.Context(), c.destSystem, c.DestDirAbsPath, args, applyArgsOptions{
 		cmd:          cmd,
@@ -64,7 +69,7 @@ func (c *Config) runApplyCmd(cmd *cobra.Command, args []string) error {
 		init:         init,
 		parentDirs:   c.apply.parentDirs,
 		recursive:    c.apply.recursive,
-		umask:        c.Umask,
+		umask:        ec.Umask,
 		preApplyFunc: c.defaultPreApplyFunc,
 	})
 }
