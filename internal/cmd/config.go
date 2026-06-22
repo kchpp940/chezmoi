@@ -118,19 +118,21 @@ type warningsConfig struct {
 }
 
 type profileConfig struct {
-	Data             map[string]any                 `json:"data"             mapstructure:"data"             yaml:"data"`
-	SourceDirAbsPath chezmoi.AbsPath                `json:"sourceDir"        mapstructure:"sourceDir"        yaml:"sourceDir"`
-	Apply            applyConfigFileConfig          `json:"apply"            mapstructure:"apply"            yaml:"apply"`
-	RefreshExternals chezmoi.RefreshExternals       `json:"refreshExternals" mapstructure:"refreshExternals" yaml:"refreshExternals"`
-	ScriptCondition  chezmoi.ScriptCondition        `json:"scriptCondition"  mapstructure:"scriptCondition"  yaml:"scriptCondition"`
-	Include          *chezmoi.EntryTypeSet          `json:"include"          mapstructure:"include"          yaml:"include"`
-	Exclude          *chezmoi.EntryTypeSet          `json:"exclude"          mapstructure:"exclude"          yaml:"exclude"`
-	Env              map[string]string              `json:"env"              mapstructure:"env"              yaml:"env"`
-	ScriptEnv        map[string]string              `json:"scriptEnv"        mapstructure:"scriptEnv"        yaml:"scriptEnv"`
-	Mode             chezmoi.Mode                   `json:"mode"             mapstructure:"mode"             yaml:"mode"`
-	Template         templateConfig                 `json:"template"         mapstructure:"template"         yaml:"template"`
-	Interpreters     map[string]chezmoi.Interpreter `json:"interpreters"     mapstructure:"interpreters"     yaml:"interpreters"`
-	Umask            fs.FileMode                    `json:"umask"            mapstructure:"umask"            yaml:"umask"`
+	Data                   map[string]any                 `json:"data"                   mapstructure:"data"                   yaml:"data"`
+	SourceDirAbsPath       chezmoi.AbsPath                `json:"sourceDir"              mapstructure:"sourceDir"              yaml:"sourceDir"`
+	CacheDirAbsPath        chezmoi.AbsPath                `json:"cacheDir"               mapstructure:"cacheDir"               yaml:"cacheDir"`
+	PersistentStateAbsPath chezmoi.AbsPath                `json:"persistentState"        mapstructure:"persistentState"        yaml:"persistentState"`
+	Apply                  applyConfigFileConfig          `json:"apply"                  mapstructure:"apply"                  yaml:"apply"`
+	RefreshExternals       chezmoi.RefreshExternals       `json:"refreshExternals"       mapstructure:"refreshExternals"       yaml:"refreshExternals"`
+	ScriptCondition        chezmoi.ScriptCondition        `json:"scriptCondition"        mapstructure:"scriptCondition"        yaml:"scriptCondition"`
+	Include                *chezmoi.EntryTypeSet          `json:"include"                mapstructure:"include"                yaml:"include"`
+	Exclude                *chezmoi.EntryTypeSet          `json:"exclude"                mapstructure:"exclude"                yaml:"exclude"`
+	Env                    map[string]string              `json:"env"                    mapstructure:"env"                    yaml:"env"`
+	ScriptEnv              map[string]string              `json:"scriptEnv"              mapstructure:"scriptEnv"              yaml:"scriptEnv"`
+	Mode                   chezmoi.Mode                   `json:"mode"                   mapstructure:"mode"                   yaml:"mode"`
+	Template               templateConfig                 `json:"template"               mapstructure:"template"               yaml:"template"`
+	Interpreters           map[string]chezmoi.Interpreter `json:"interpreters"           mapstructure:"interpreters"           yaml:"interpreters"`
+	Umask                  fs.FileMode                    `json:"umask"                  mapstructure:"umask"                  yaml:"umask"`
 }
 
 func newProfileConfig() profileConfig {
@@ -2755,6 +2757,27 @@ func (c *Config) readConfig(configFileAbsPath chezmoi.AbsPath) error {
 	}
 }
 
+// applyProfile applies the selected profile's overrides to the config.
+//
+// Profile selection priority (highest to lowest):
+//  1. --profile command line flag
+//  2. CHEZMOI_PROFILE environment variable
+//  3. currentProfile in config file
+//
+// Profile override priority for each field (highest to lowest):
+//  1. Command line flags (restored after applyProfile returns)
+//  2. Profile's explicit value (e.g. profiles.dev.sourceDir)
+//  3. Auto-derived profile-scoped path (e.g. ~/.config/chezmoi/profiles/dev/chezmoistate.boltdb)
+//  4. Config file global value
+//
+// State isolation guarantees:
+//   - PersistentState (boltdb) uses a profile-scoped path: <configDir>/profiles/<name>/chezmoistate.boltdb
+//     unless the profile explicitly sets persistentState, or --persistent-state is used
+//   - CacheDir uses a profile-scoped path: <cacheDir>/profiles/<name>
+//     unless the profile explicitly sets cacheDir, or --cache is used
+//   - SourceDir uses the profile's sourceDir if set, otherwise the global config value
+//   - Template data (including .chezmoi.profile) is rebuilt from profile-aware config
+//   - Source state cache is cleared on profile activation
 func (c *Config) applyProfile() error {
 	profileName := c.getSelectedProfile()
 	if profileName == "" {
@@ -2774,6 +2797,23 @@ func (c *Config) applyProfile() error {
 
 	if !profile.SourceDirAbsPath.IsEmpty() {
 		c.SourceDirAbsPath = profile.SourceDirAbsPath
+	}
+
+	profileRelPath := chezmoi.NewRelPath("profiles").Join(chezmoi.NewRelPath(profileName))
+
+	if !profile.PersistentStateAbsPath.IsEmpty() {
+		c.PersistentStateAbsPath = profile.PersistentStateAbsPath
+	} else if c.PersistentStateAbsPath.IsEmpty() {
+		configFileAbsPath, err := c.getConfigFileAbsPath()
+		if err == nil {
+			c.PersistentStateAbsPath = configFileAbsPath.Dir().Join(profileRelPath, persistentStateFileRelPath)
+		}
+	}
+
+	if !profile.CacheDirAbsPath.IsEmpty() {
+		c.CacheDirAbsPath = profile.CacheDirAbsPath
+	} else if !c.CacheDirAbsPath.IsEmpty() {
+		c.CacheDirAbsPath = c.CacheDirAbsPath.Join(profileRelPath)
 	}
 
 	if len(profile.Data) > 0 {
@@ -2880,6 +2920,8 @@ func (c *Config) setScriptCondition(condition chezmoi.ScriptCondition) {
 func (c *Config) resetSourceState() {
 	c.sourceState = nil
 	c.sourceStateErr = nil
+	c.sourceDirAbsPath = chezmoi.EmptyAbsPath
+	c.sourceDirAbsPathErr = nil
 }
 
 // run runs name with args in dir.

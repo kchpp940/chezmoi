@@ -844,6 +844,87 @@ func TestProfileIsolation(t *testing.T) {
 	})
 }
 
+func TestProfileStateIsolation(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`[profiles.dev]`,
+		`  data = { machineType = "dev" }`,
+		`[profiles.gpu]`,
+		`  data = { machineType = "gpu" }`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+
+		c1 := newTestConfig(t, fileSystem)
+		c1.currentProfile = "dev"
+		assert.NoError(t, c1.readConfig(configFileAbsPath))
+		assert.NoError(t, c1.applyProfile())
+		assert.Equal(t, "/home/user/.config/chezmoi/profiles/dev/chezmoistate.boltdb", c1.PersistentStateAbsPath.String())
+		assert.Contains(t, c1.CacheDirAbsPath.String(), "profiles/dev")
+
+		c2 := newTestConfig(t, fileSystem)
+		c2.currentProfile = "gpu"
+		assert.NoError(t, c2.readConfig(configFileAbsPath))
+		assert.NoError(t, c2.applyProfile())
+		assert.Equal(t, "/home/user/.config/chezmoi/profiles/gpu/chezmoistate.boltdb", c2.PersistentStateAbsPath.String())
+		assert.Contains(t, c2.CacheDirAbsPath.String(), "profiles/gpu")
+
+		assert.NotEqual(t, c1.PersistentStateAbsPath, c2.PersistentStateAbsPath)
+		assert.NotEqual(t, c1.CacheDirAbsPath, c2.CacheDirAbsPath)
+	})
+}
+
+func TestProfileExplicitStatePaths(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`[profiles.dev]`,
+		`  persistentState = "/custom/state/dev.boltdb"`,
+		`  cacheDir = "/custom/cache/dev"`,
+		`[profiles.gpu]`,
+		`  data = { machineType = "gpu" }`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+
+		c1 := newTestConfig(t, fileSystem)
+		c1.currentProfile = "dev"
+		assert.NoError(t, c1.readConfig(configFileAbsPath))
+		assert.NoError(t, c1.applyProfile())
+		assert.Equal(t, "/custom/state/dev.boltdb", c1.PersistentStateAbsPath.String())
+		assert.Equal(t, "/custom/cache/dev", c1.CacheDirAbsPath.String())
+
+		c2 := newTestConfig(t, fileSystem)
+		c2.currentProfile = "gpu"
+		assert.NoError(t, c2.readConfig(configFileAbsPath))
+		assert.NoError(t, c2.applyProfile())
+		assert.Equal(t, "/home/user/.config/chezmoi/profiles/gpu/chezmoistate.boltdb", c2.PersistentStateAbsPath.String())
+		assert.Contains(t, c2.CacheDirAbsPath.String(), "profiles/gpu")
+	})
+}
+
+func TestProfileNoProfileDefaultPaths(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`[profiles.dev]`,
+		`  data = { machineType = "dev" }`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+
+		c := newTestConfig(t, fileSystem)
+		assert.NoError(t, c.readConfig(configFileAbsPath))
+		assert.NoError(t, c.applyProfile())
+		assert.True(t, c.PersistentStateAbsPath.IsEmpty())
+		assert.NotContains(t, c.CacheDirAbsPath.String(), "profiles")
+	})
+}
+
 func TestProfileTemplateData(t *testing.T) {
 	configContent := chezmoitest.JoinLines(
 		`currentProfile = "dev"`,
