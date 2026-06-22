@@ -3,8 +3,11 @@ package chezmoi
 import (
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/go-viper/mapstructure/v2"
 )
 
 type RefreshExternals int
@@ -57,4 +60,17 @@ func (re RefreshExternals) String() string {
 
 func (re RefreshExternals) Type() string {
 	return "always|auto|never"
+}
+
+func StringToRefreshExternalsHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String || t != reflect.TypeOf(RefreshExternals(0)) {
+			return data, nil
+		}
+		var result RefreshExternals
+		if err := result.Set(data.(string)); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 }

@@ -237,9 +237,18 @@ func (c *Config) runInitCmd(cmd *cobra.Command, args []string) error {
 		if err := c.runHookPre("apply"); err != nil {
 			return err
 		}
+		filter := c.init.filter
+		if c.profile != nil {
+			if c.profile.Apply.Include != nil && c.profile.Apply.Include.Bits() != chezmoi.EntryTypesNone {
+				filter.Include = c.profile.Apply.Include
+			}
+			if c.profile.Apply.Exclude != nil && c.profile.Apply.Exclude.Bits() != chezmoi.EntryTypesNone {
+				filter.Exclude = c.profile.Apply.Exclude
+			}
+		}
 		if err := c.applyArgs(cmd.Context(), c.destSystem, c.DestDirAbsPath, noArgs, applyArgsOptions{
 			cmd:          cmd,
-			filter:       c.init.filter,
+			filter:       filter,
 			recursive:    false,
 			umask:        c.Umask,
 			preApplyFunc: c.defaultPreApplyFunc,

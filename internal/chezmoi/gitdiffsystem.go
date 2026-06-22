@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log/slog"
 	"os/exec"
 	"runtime"
 	"time"
@@ -343,14 +342,9 @@ func (s *GitDiffSystem) encodeDiff(absPath AbsPath, toData []byte, toMode fs.Fil
 			return err
 		}
 		if s.textConvFunc != nil {
-			convertedFromData, _, err := s.textConvFunc(absPath.String(), fromData)
+			fromData, _, err = s.textConvFunc(absPath.String(), fromData)
 			if err != nil {
-				slog.Warn("textconv failed for from data, falling back to original",
-					slog.String("path", absPath.String()),
-					slog.Any("err", err),
-				)
-			} else {
-				fromData = convertedFromData
+				return err
 			}
 		}
 		fromMode = fromInfo.Mode()
@@ -366,14 +360,10 @@ func (s *GitDiffSystem) encodeDiff(absPath AbsPath, toData []byte, toMode fs.Fil
 	}
 
 	if s.textConvFunc != nil {
-		convertedToData, _, err := s.textConvFunc(absPath.String(), toData)
+		var err error
+		toData, _, err = s.textConvFunc(absPath.String(), toData)
 		if err != nil {
-			slog.Warn("textconv failed for to data, falling back to original",
-				slog.String("path", absPath.String()),
-				slog.Any("err", err),
-			)
-		} else {
-			toData = convertedToData
+			return err
 		}
 	}
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/assert/v2"
+	"github.com/spf13/cobra"
 	"github.com/twpayne/go-vfs/v5"
 	"github.com/twpayne/go-xdg/v6"
 
@@ -615,4 +616,284 @@ func withUmask(umask fs.FileMode) configOption {
 		c.Umask = umask
 		return nil
 	}
+}
+
+func TestProfileConfig(t *testing.T) {
+	testCases := []struct {
+		name            string
+		configFile      string
+		args            []string
+		envProfile      string
+		expectedErr     string
+		expectedProfile string
+		check           func(t *testing.T, c *Config)
+	}{
+		{
+			name: "no_profile",
+			configFile: chezmoitest.JoinLines(
+				`[profiles.dev]`,
+				`  data = { machineType = "dev" }`,
+			),
+			expectedProfile: "",
+		},
+		{
+			name: "current_profile_in_config",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "dev"`,
+				`[profiles.dev]`,
+				`  data = { machineType = "dev" }`,
+			),
+			expectedProfile: "dev",
+		},
+		{
+			name: "profile_from_env",
+			configFile: chezmoitest.JoinLines(
+				`[profiles.dev]`,
+				`  data = { machineType = "dev" }`,
+				`[profiles.gpu]`,
+				`  data = { machineType = "gpu" }`,
+			),
+			envProfile:      "gpu",
+			expectedProfile: "gpu",
+		},
+		{
+			name: "profile_from_args",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "dev"`,
+				`[profiles.dev]`,
+				`  data = { machineType = "dev" }`,
+				`[profiles.ci]`,
+				`  data = { machineType = "ci" }`,
+			),
+			args:            []string{"--profile", "ci"},
+			envProfile:      "gpu",
+			expectedProfile: "ci",
+		},
+		{
+			name: "unknown_profile",
+			configFile: chezmoitest.JoinLines(
+				`[profiles.dev]`,
+				`  data = { machineType = "dev" }`,
+			),
+			args:        []string{"--profile", "unknown"},
+			expectedErr: `profile "unknown" not found`,
+		},
+		{
+			name: "profile_data_override",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "dev"`,
+				`[data]`,
+				`  globalKey = "globalValue"`,
+				`  sharedKey = "globalShared"`,
+				`[profiles.dev]`,
+				`  data = { machineType = "dev", sharedKey = "devShared" }`,
+			),
+			expectedProfile: "dev",
+			check: func(t *testing.T, c *Config) {
+				assert.Equal(t, "globalValue", c.Data["globalKey"])
+				assert.Equal(t, "devShared", c.Data["sharedKey"])
+				assert.Equal(t, "dev", c.Data["machineType"])
+			},
+		},
+		{
+			name: "profile_source_dir_override",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "gpu"`,
+				`[profiles.gpu]`,
+				`  sourceDir = "/home/user/.local/share/chezmoi-gpu"`,
+			),
+			expectedProfile: "gpu",
+			check: func(t *testing.T, c *Config) {
+				assert.Equal(t, "/home/user/.local/share/chezmoi-gpu", c.SourceDirAbsPath.String())
+			},
+		},
+		{
+			name: "profile_refresh_externals_override",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "ci"`,
+				`[profiles.ci]`,
+				`  refreshExternals = "always"`,
+			),
+			expectedProfile: "ci",
+			check: func(t *testing.T, c *Config) {
+				assert.Equal(t, chezmoi.RefreshExternalsAlways, c.refreshExternals)
+			},
+		},
+		{
+			name: "profile_apply_options",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "dev"`,
+				`[profiles.dev.apply]`,
+				`  exclude = ["scripts"]`,
+			),
+			expectedProfile: "dev",
+			check: func(t *testing.T, c *Config) {
+				assert.True(t, c.Apply.Exclude.Bits()&chezmoi.EntryTypeScripts != 0)
+			},
+		},
+		{
+			name: "profile_script_condition",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "ci"`,
+				`[profiles.ci]`,
+				`  scriptCondition = "always"`,
+			),
+			expectedProfile: "ci",
+			check: func(t *testing.T, c *Config) {
+				assert.True(t, c.apply.filter.Include.Bits()&chezmoi.EntryTypeScripts != 0)
+				assert.True(t, c.apply.filter.Include.Bits()&chezmoi.EntryTypeAlways != 0)
+			},
+		},
+		{
+			name: "profile_env_override",
+			configFile: chezmoitest.JoinLines(
+				`currentProfile = "dev"`,
+				`[env]`,
+				`  GLOBAL_VAR = "global"`,
+				`[profiles.dev]`,
+				`  [profiles.dev.env]`,
+				`    PROFILE_VAR = "dev"`,
+			),
+			expectedProfile: "dev",
+			check: func(t *testing.T, c *Config) {
+				assert.Equal(t, "global", c.Env["GLOBAL_VAR"])
+				assert.Equal(t, "dev", c.Env["PROFILE_VAR"])
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envProfile != "" {
+				t.Setenv("CHEZMOI_PROFILE", tc.envProfile)
+			}
+
+			chezmoitest.WithTestFS(t, map[string]any{
+				"/home/user/.config/chezmoi/chezmoi.toml": tc.configFile,
+			}, func(fileSystem vfs.FS) {
+				c := newTestConfig(t, fileSystem)
+				if tc.args != nil {
+					c.currentProfile = ""
+					for i := 0; i < len(tc.args); i += 2 {
+						if tc.args[i] == "--profile" && i+1 < len(tc.args) {
+							c.currentProfile = tc.args[i+1]
+						}
+					}
+				}
+				configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+				err := c.readConfig(configFileAbsPath)
+				assert.NoError(t, err)
+
+				err = c.applyProfile()
+				if tc.expectedErr != "" {
+					assert.Error(t, err)
+					assert.Contains(t, err.Error(), tc.expectedErr)
+					return
+				}
+				assert.NoError(t, err)
+
+				assert.Equal(t, tc.expectedProfile, c.getSelectedProfile())
+				if tc.check != nil {
+					tc.check(t, c)
+				}
+			})
+		})
+	}
+}
+
+func TestProfileIsolation(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`[profiles.dev]`,
+		`  data = { machineType = "dev", isGPU = false }`,
+		`  sourceDir = "/home/user/.local/share/chezmoi-dev"`,
+		`  refreshExternals = "never"`,
+		`[profiles.gpu]`,
+		`  data = { machineType = "gpu", isGPU = true }`,
+		`  sourceDir = "/home/user/.local/share/chezmoi-gpu"`,
+		`  refreshExternals = "always"`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+
+		c1 := newTestConfig(t, fileSystem)
+		c1.currentProfile = "dev"
+		assert.NoError(t, c1.readConfig(configFileAbsPath))
+		assert.NoError(t, c1.applyProfile())
+		assert.Equal(t, "dev", c1.getSelectedProfile())
+		assert.Equal(t, "dev", c1.Data["machineType"])
+		assert.Equal(t, false, c1.Data["isGPU"])
+		assert.Equal(t, "/home/user/.local/share/chezmoi-dev", c1.SourceDirAbsPath.String())
+		assert.Equal(t, chezmoi.RefreshExternalsNever, c1.refreshExternals)
+
+		c2 := newTestConfig(t, fileSystem)
+		c2.currentProfile = "gpu"
+		assert.NoError(t, c2.readConfig(configFileAbsPath))
+		assert.NoError(t, c2.applyProfile())
+		assert.Equal(t, "gpu", c2.getSelectedProfile())
+		assert.Equal(t, "gpu", c2.Data["machineType"])
+		assert.Equal(t, true, c2.Data["isGPU"])
+		assert.Equal(t, "/home/user/.local/share/chezmoi-gpu", c2.SourceDirAbsPath.String())
+		assert.Equal(t, chezmoi.RefreshExternalsAlways, c2.refreshExternals)
+
+		assert.NotEqual(t, c1.Data["machineType"], c2.Data["machineType"])
+		assert.NotEqual(t, c1.SourceDirAbsPath, c2.SourceDirAbsPath)
+		assert.NotEqual(t, c1.refreshExternals, c2.refreshExternals)
+	})
+}
+
+func TestProfileTemplateData(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`currentProfile = "dev"`,
+		`[profiles.dev]`,
+		`  data = { machineType = "dev" }`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		c := newTestConfig(t, fileSystem)
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+		assert.NoError(t, c.readConfig(configFileAbsPath))
+		assert.NoError(t, c.applyProfile())
+
+		rootCmd, err := c.newRootCmd()
+		assert.NoError(t, err)
+
+		templateDataMap := c.getTemplateDataMap(rootCmd)
+		chezmoiData, ok := templateDataMap["chezmoi"].(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, "dev", chezmoiData["profile"])
+	})
+}
+
+func TestProfileFlagCompletion(t *testing.T) {
+	configContent := chezmoitest.JoinLines(
+		`[profiles.alpha]`,
+		`  data = { name = "alpha" }`,
+		`[profiles.beta]`,
+		`  data = { name = "beta" }`,
+		`[profiles.gamma]`,
+		`  data = { name = "gamma" }`,
+	)
+
+	chezmoitest.WithTestFS(t, map[string]any{
+		"/home/user/.config/chezmoi/chezmoi.toml": configContent,
+	}, func(fileSystem vfs.FS) {
+		c := newTestConfig(t, fileSystem)
+		configFileAbsPath := chezmoi.NewAbsPath("/home/user/.config/chezmoi/chezmoi.toml")
+		assert.NoError(t, c.readConfig(configFileAbsPath))
+
+		rootCmd, err := c.newRootCmd()
+		assert.NoError(t, err)
+
+		completions, directive := c.profileFlagCompletionFunc(rootCmd, nil, "")
+		assert.Equal(t, []string{"alpha", "beta", "gamma"}, completions)
+		assert.Equal(t, cobra.ShellCompDirectiveNoFileComp, directive)
+
+		completions, _ = c.profileFlagCompletionFunc(rootCmd, nil, "b")
+		assert.Equal(t, []string{"beta"}, completions)
+	})
 }

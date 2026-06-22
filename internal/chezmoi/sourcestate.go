@@ -751,34 +751,17 @@ func (s *SourceState) AddDestAbsPathInfos(
 	}
 }
 
-// A PreApplyFunc is called before a target is applied, receiving the complete
-// unified StateDecision to ensure consistent behavior across commands.
-type PreApplyFunc func(decision StateDecision) error
+// A PreApplyFunc is called before a target is applied.
+type PreApplyFunc func(targetRelPath RelPath, targetEntryState, lastWrittenEntryState, actualEntryState *EntryState) error
 
 // ApplyOptions are options to SourceState.ApplyAll and SourceState.ApplyOne.
 type ApplyOptions struct {
 	Filter       *EntryTypeFilter
 	PreApplyFunc PreApplyFunc
 	Umask        fs.FileMode
-	TextConvFunc func(path string, data []byte) ([]byte, bool, error)
 }
 
 // Apply updates targetRelPath in targetDirAbsPath in destSystem to match s.
-//
-// This function distinguishes between regular files and special entry types
-// (scripts, external repos, modify-dir-with-cmd, symlinks, directories, etc.):
-//
-//   - For regular files (EntryStateTypeFile): Uses the unified StateDecision
-//     for all judgments (drift detection, textconv errors, lastWritten state
-//     updates). State is only written after Apply succeeds completely.
-//
-//   - For special types: Uses the TargetStateEntry's own SkipApply logic and
-//     internal state management. The StateDecision is still produced for
-//     PreApplyFunc consumption (e.g., status reporting), but its boolean
-//     flags are ignored for execution control.
-//
-// Failures in keep-going mode do not pollute persistent state for subsequent
-// entries because each entry gets its own copy of ApplyOptions.
 func (s *SourceState) Apply(
 	targetSystem, destSystem System,
 	persistentState PersistentState,
@@ -812,9 +795,11 @@ func (s *SourceState) Apply(
 		return err
 	}
 
-	skipApplyResult, skipApplyErr := targetStateEntry.SkipApply(persistentState, targetAbsPath)
-	if skipApplyErr != nil {
-		return skipApplyErr
+	switch skip, err := targetStateEntry.SkipApply(persistentState, targetAbsPath); {
+	case err != nil:
+		return err
+	case skip:
+		return nil
 	}
 
 	actualStateEntry, err := NewActualStateEntry(targetSystem, targetAbsPath, nil, nil)
@@ -822,89 +807,49 @@ func (s *SourceState) Apply(
 		return err
 	}
 
-	var lastWrittenEntryState *EntryState
-	var entryState EntryState
-	ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
-	if err != nil {
-		return err
-	}
-	if ok {
-		lastWrittenEntryState = &entryState
-	}
-
-	actualEntryState, err := actualStateEntry.EntryState()
-	if err != nil {
-		return err
-	}
-
-	decision := MakeStateDecision(
-		targetRelPath,
-		targetEntryState,
-		lastWrittenEntryState,
-		actualEntryState,
-		skipApplyResult,
-		skipApplyErr,
-		options.TextConvFunc,
-	)
-
 	if options.PreApplyFunc != nil {
-		if err := options.PreApplyFunc(decision); err != nil {
+		var lastWrittenEntryState *EntryState
+		var entryState EntryState
+		ok, err := PersistentStateGet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), &entryState)
+		if err != nil {
+			return err
+		}
+		if ok {
+			lastWrittenEntryState = &entryState
+		}
+
+		actualEntryState, err := actualStateEntry.EntryState()
+		if err != nil {
+			return err
+		}
+
+		// If the target entry state matches the actual entry state, but not the
+		// last written entry state then silently update the last written entry
+		// state. This handles the case where the user makes identical edits to
+		// the source and target states: instead of reporting a diff with
+		// respect to the last written state, we record the effect of the last
+		// apply as the last written state.
+		if targetEntryState.Equivalent(actualEntryState) && !lastWrittenEntryState.Equivalent(actualEntryState) {
+			err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState)
+			if err != nil {
+				return err
+			}
+			lastWrittenEntryState = targetEntryState
+		}
+
+		err = options.PreApplyFunc(targetRelPath, targetEntryState, lastWrittenEntryState, actualEntryState)
+		if err != nil {
 			return err
 		}
 	}
 
-	_, isScript := targetStateEntry.(*TargetStateScript)
-	_, isModifyDirWithCmd := targetStateEntry.(*TargetStateModifyDirWithCmd)
-	isSpecialType := isScript || isModifyDirWithCmd || !decision.IsRegularFile
-
-	if isSpecialType {
-		if skipApplyResult {
-			return nil
-		}
-		changed, applyErr := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
-		if applyErr != nil {
-			return applyErr
-		}
-		if changed && !isScript && !isModifyDirWithCmd {
-			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	if !decision.NeedApply {
-		if decision.NeedSilentUpdate {
-			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	changed, applyErr := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry)
-	if applyErr != nil {
-		return applyErr
-	}
-
-	if !changed {
-		if decision.NeedSilentUpdate {
-			if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	if !decision.NeedUpdateLastWritten {
-		return nil
-	}
-
-	if err := PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState); err != nil {
+	if changed, err := targetStateEntry.Apply(targetSystem, persistentState, actualStateEntry); err != nil {
 		return err
+	} else if !changed {
+		return nil
 	}
 
-	return nil
+	return PersistentStateSet(persistentState, EntryStateBucket, targetAbsPath.Bytes(), targetEntryState)
 }
 
 // Encryption returns s's encryption.

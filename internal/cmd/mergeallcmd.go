@@ -37,11 +37,9 @@ func (c *Config) newMergeAllCmd() *cobra.Command {
 
 func (c *Config) runMergeAllCmd(cmd *cobra.Command, args []string) error {
 	var targetRelPaths []chezmoi.RelPath
-	preApplyFunc := func(decision chezmoi.StateDecision) error {
-		if decision.TargetEntryState != nil &&
-			decision.TargetEntryState.Type == chezmoi.EntryStateTypeFile &&
-			decision.NeedReportDrift {
-			targetRelPaths = append(targetRelPaths, decision.TargetRelPath)
+	preApplyFunc := func(targetRelPath chezmoi.RelPath, targetEntryState, lastWrittenEntryState, actualEntryState *chezmoi.EntryState) error {
+		if targetEntryState.Type == chezmoi.EntryStateTypeFile && !targetEntryState.Equivalent(actualEntryState) {
+			targetRelPaths = append(targetRelPaths, targetRelPath)
 		}
 		return fs.SkipDir
 	}

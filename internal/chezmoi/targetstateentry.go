@@ -159,7 +159,7 @@ func (t *TargetStateDir) Apply(
 	actualStateEntry ActualStateEntry,
 ) (bool, error) {
 	if actualStateDir, ok := actualStateEntry.(*ActualStateDir); ok {
-		if runtime.GOOS == "windows" || actualStateDir.perm.Perm() == t.perm.Perm() {
+		if runtime.GOOS == "windows" || actualStateDir.perm == t.perm {
 			return false, nil
 		}
 		return true, system.Chmod(actualStateDir.Path(), t.perm)
@@ -223,7 +223,7 @@ func (t *TargetStateFile) Apply(
 			return false, err
 		}
 		if actualContentsSHA256 == contentsSHA256 {
-			if runtime.GOOS == "windows" || actualStateFile.perm.Perm() == t.perm.Perm() {
+			if runtime.GOOS == "windows" || actualStateFile.perm == t.perm {
 				return false, nil
 			}
 			return true, system.Chmod(actualStateFile.Path(), t.perm)

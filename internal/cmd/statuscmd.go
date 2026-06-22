@@ -51,47 +51,33 @@ func (c *Config) newStatusCmd() *cobra.Command {
 
 func (c *Config) runStatusCmd(cmd *cobra.Command, args []string) error {
 	builder := strings.Builder{}
-	preApplyFunc := func(decision chezmoi.StateDecision) error {
+	preApplyFunc := func(targetRelPath chezmoi.RelPath, targetEntryState, lastWrittenEntryState, actualEntryState *chezmoi.EntryState) error {
 		c.logger.Info("statusPreApplyFunc",
-			chezmoilog.Stringer("targetRelPath", decision.TargetRelPath),
-			slog.Any("targetEntryState", decision.TargetEntryState),
-			slog.Any("lastWrittenEntryState", decision.LastWrittenEntryState),
-			slog.Any("actualEntryState", decision.ActualEntryState),
+			chezmoilog.Stringer("targetRelPath", targetRelPath),
+			slog.Any("targetEntryState", targetEntryState),
+			slog.Any("lastWrittenEntryState", lastWrittenEntryState),
+			slog.Any("actualEntryState", actualEntryState),
 		)
 
 		var (
 			x = ' '
 			y = ' '
 		)
-
 		switch {
-		case decision.TargetEntryState != nil && decision.TargetEntryState.Type == chezmoi.EntryStateTypeScript:
+		case targetEntryState.Type == chezmoi.EntryStateTypeScript:
 			y = 'R'
-		case decision.IsRegularFile:
-			if decision.FromTextConvResult.Err != nil {
-				c.errorf("%s: textconv from actual failed: %v\n", decision.TargetRelPath, decision.FromTextConvResult.Err)
-			}
-			if decision.ToTextConvResult.Err != nil {
-				c.errorf("%s: textconv to target failed: %v\n", decision.TargetRelPath, decision.ToTextConvResult.Err)
-			}
-			if decision.NeedReportDrift {
-				x = statusRune(decision.LastWrittenEntryState, decision.ActualEntryState)
-				y = statusRune(decision.ActualEntryState, decision.TargetEntryState)
-			}
-		default:
-			if decision.TargetEntryState != nil && !decision.TargetEntryState.Equivalent(decision.ActualEntryState) {
-				x = statusRune(decision.LastWrittenEntryState, decision.ActualEntryState)
-				y = statusRune(decision.ActualEntryState, decision.TargetEntryState)
-			}
+		case !targetEntryState.Equivalent(actualEntryState):
+			x = statusRune(lastWrittenEntryState, actualEntryState)
+			y = statusRune(actualEntryState, targetEntryState)
 		}
 
 		if x != ' ' || y != ' ' {
 			var path string
 			switch pathStyle := c.Status.PathStyle.String(); pathStyle {
 			case pathStyleAbsolute:
-				path = c.DestDirAbsPath.Join(decision.TargetRelPath).String()
+				path = c.DestDirAbsPath.Join(targetRelPath).String()
 			case pathStyleRelative:
-				path = decision.TargetRelPath.String()
+				path = targetRelPath.String()
 			default:
 				return fmt.Errorf("%s: invalid path style", pathStyle)
 			}
@@ -108,7 +94,6 @@ func (c *Config) runStatusCmd(cmd *cobra.Command, args []string) error {
 		recursive:    c.Status.recursive,
 		umask:        c.Umask,
 		preApplyFunc: preApplyFunc,
-		textConvFunc: c.TextConv.convert,
 	}); err != nil {
 		return err
 	}

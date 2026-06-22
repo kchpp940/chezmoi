@@ -117,11 +117,39 @@ type warningsConfig struct {
 	ConfigFileTemplateHasChanged bool `json:"configFileTemplateHasChanged" mapstructure:"configFileTemplateHasChanged" yaml:"configFileTemplateHasChanged"`
 }
 
+type profileConfig struct {
+	Data             map[string]any                 `json:"data"             mapstructure:"data"             yaml:"data"`
+	SourceDirAbsPath chezmoi.AbsPath                `json:"sourceDir"        mapstructure:"sourceDir"        yaml:"sourceDir"`
+	Apply            applyConfigFileConfig          `json:"apply"            mapstructure:"apply"            yaml:"apply"`
+	RefreshExternals chezmoi.RefreshExternals       `json:"refreshExternals" mapstructure:"refreshExternals" yaml:"refreshExternals"`
+	ScriptCondition  chezmoi.ScriptCondition        `json:"scriptCondition"  mapstructure:"scriptCondition"  yaml:"scriptCondition"`
+	Include          *chezmoi.EntryTypeSet          `json:"include"          mapstructure:"include"          yaml:"include"`
+	Exclude          *chezmoi.EntryTypeSet          `json:"exclude"          mapstructure:"exclude"          yaml:"exclude"`
+	Env              map[string]string              `json:"env"              mapstructure:"env"              yaml:"env"`
+	ScriptEnv        map[string]string              `json:"scriptEnv"        mapstructure:"scriptEnv"        yaml:"scriptEnv"`
+	Mode             chezmoi.Mode                   `json:"mode"             mapstructure:"mode"             yaml:"mode"`
+	Template         templateConfig                 `json:"template"         mapstructure:"template"         yaml:"template"`
+	Interpreters     map[string]chezmoi.Interpreter `json:"interpreters"     mapstructure:"interpreters"     yaml:"interpreters"`
+	Umask            fs.FileMode                    `json:"umask"            mapstructure:"umask"            yaml:"umask"`
+}
+
+func newProfileConfig() profileConfig {
+	return profileConfig{
+		Data:         make(map[string]any),
+		Env:          make(map[string]string),
+		ScriptEnv:    make(map[string]string),
+		Interpreters: make(map[string]chezmoi.Interpreter),
+		Include:      chezmoi.NewEntryTypeSet(chezmoi.EntryTypesNone),
+		Exclude:      chezmoi.NewEntryTypeSet(chezmoi.EntryTypesNone),
+	}
+}
+
 // ConfigFile contains all data settable in the config file.
 type ConfigFile struct {
 	// Global configuration.
 	CacheDirAbsPath        chezmoi.AbsPath                `json:"cacheDir"        mapstructure:"cacheDir"        yaml:"cacheDir"`
 	Color                  autoBool                       `json:"color"           mapstructure:"color"           yaml:"color"`
+	CurrentProfile         string                         `json:"currentProfile"  mapstructure:"currentProfile"  yaml:"currentProfile"`
 	Data                   map[string]any                 `json:"data"            mapstructure:"data"            yaml:"data"`
 	Env                    map[string]string              `json:"env"             mapstructure:"env"             yaml:"env"`
 	Format                 *choiceFlag                    `json:"format"          mapstructure:"format"          yaml:"format"`
@@ -137,6 +165,7 @@ type ConfigFile struct {
 	PersistentStateAbsPath chezmoi.AbsPath                `json:"persistentState" mapstructure:"persistentState" yaml:"persistentState"`
 	PINEntry               pinEntryConfig                 `json:"pinentry"        mapstructure:"pinentry"        yaml:"pinentry"`
 	Progress               autoBool                       `json:"progress"        mapstructure:"progress"        yaml:"progress"`
+	Profiles               map[string]profileConfig       `json:"profiles"        mapstructure:"profiles"        yaml:"profiles"`
 	Safe                   bool                           `json:"safe"            mapstructure:"safe"            yaml:"safe"`
 	ScriptEnv              map[string]string              `json:"scriptEnv"       mapstructure:"scriptEnv"       yaml:"scriptEnv"`
 	ScriptTempDir          chezmoi.AbsPath                `json:"scriptTempDir"   mapstructure:"scriptTempDir"   yaml:"scriptTempDir"`
@@ -150,6 +179,9 @@ type ConfigFile struct {
 	Verbose                bool                           `json:"verbose"         mapstructure:"verbose"         yaml:"verbose"`
 	Warnings               warningsConfig                 `json:"warnings"        mapstructure:"warnings"        yaml:"warnings"`
 	WorkingTreeAbsPath     chezmoi.AbsPath                `json:"workingTree"     mapstructure:"workingTree"     yaml:"workingTree"`
+
+	// Command configurations.
+	Apply applyConfigFileConfig `json:"apply" mapstructure:"apply" yaml:"apply"`
 
 	// Password manager configurations.
 	AWSSecretsManager awsSecretsManagerConfig `json:"awsSecretsManager" mapstructure:"awsSecretsManager" yaml:"awsSecretsManager"`
@@ -198,6 +230,7 @@ type Config struct {
 	ageRecipient     string
 	ageRecipientFile string
 	configFormat     *choiceFlag
+	currentProfile   string
 	debug            bool
 	dryRun           bool
 	force            bool
@@ -206,6 +239,7 @@ type Config struct {
 	noPager          bool
 	noTTY            bool
 	outputAbsPath    chezmoi.AbsPath
+	profile          *profileConfig
 	refreshExternals chezmoi.RefreshExternals
 	sourcePath       bool
 	templateFuncs    template.FuncMap
@@ -319,6 +353,7 @@ type templateData struct {
 	osRelease         map[string]any
 	pathListSeparator string
 	pathSeparator     string
+	profile           string
 	rawHomeDir        string
 	sourceDir         string
 	uid               string
@@ -651,7 +686,6 @@ type applyArgsOptions struct {
 	recursive    bool
 	umask        fs.FileMode
 	preApplyFunc chezmoi.PreApplyFunc
-	textConvFunc func(path string, data []byte) ([]byte, bool, error)
 }
 
 // applyArgs is the core of all commands that make changes to a target system.
@@ -745,13 +779,11 @@ func (c *Config) applyArgs(
 		Filter:       options.filter,
 		PreApplyFunc: options.preApplyFunc,
 		Umask:        options.umask,
-		TextConvFunc: options.textConvFunc,
 	}
 
 	keptGoingAfterErr := false
 	for _, targetRelPath := range targetRelPaths {
-		entryApplyOptions := applyOptions
-		switch err := sourceState.Apply(targetSystem, c.destSystem, c.persistentState, targetDirAbsPath, targetRelPath, entryApplyOptions); {
+		switch err := sourceState.Apply(targetSystem, c.destSystem, c.persistentState, targetDirAbsPath, targetRelPath, applyOptions); {
 		case errors.Is(err, fs.SkipDir):
 			continue
 		case err != nil:
@@ -794,26 +826,16 @@ func (c *Config) builtinDiffFile(
 	}
 	if fromMode.IsRegular() {
 		var err error
-		convertedFromData, _, err := c.TextConv.convert(relPath.String(), fromData)
+		fromData, _, err = c.TextConv.convert(relPath.String(), fromData)
 		if err != nil {
-			c.logger.Warn("textconv failed for from data, falling back to original",
-				slog.String("path", relPath.String()),
-				slog.Any("err", err),
-			)
-		} else {
-			fromData = convertedFromData
+			return err
 		}
 	}
 	if toMode.IsRegular() {
 		var err error
-		convertedToData, _, err := c.TextConv.convert(relPath.String(), toData)
+		toData, _, err = c.TextConv.convert(relPath.String(), toData)
 		if err != nil {
-			c.logger.Warn("textconv failed for to data, falling back to original",
-				slog.String("path", relPath.String()),
-				slog.Any("err", err),
-			)
-		} else {
-			toData = convertedToData
+			return err
 		}
 	}
 	diffPatch, err := chezmoi.DiffPatch(relPath, fromData, fromMode, toData, toMode)
@@ -1103,6 +1125,7 @@ func (c *Config) decodeConfigMap(configMap map[string]any, configFile *ConfigFil
 			mapstructure.StringToSliceHookFunc(","),
 			chezmoi.StringSliceToEntryTypeSetHookFunc(),
 			chezmoi.StringToAbsPathHookFunc(),
+			chezmoi.StringToRefreshExternalsHookFunc(),
 			StringOrBoolToAutoBoolHookFunc(),
 			StringToChoiceFlagHookFunc(),
 		),
@@ -1117,12 +1140,10 @@ func (c *Config) decodeConfigMap(configMap map[string]any, configFile *ConfigFil
 // defaultPreApplyFunc is the default pre-apply function. If the target entry
 // has changed since chezmoi last wrote it then it prompts the user for the
 // action to take.
-func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
-	targetRelPath := decision.TargetRelPath
-	targetEntryState := decision.TargetEntryState
-	lastWrittenEntryState := decision.LastWrittenEntryState
-	actualEntryState := decision.ActualEntryState
-
+func (c *Config) defaultPreApplyFunc(
+	targetRelPath chezmoi.RelPath,
+	targetEntryState, lastWrittenEntryState, actualEntryState *chezmoi.EntryState,
+) error {
 	c.logger.Info("defaultPreApplyFunc",
 		chezmoilog.Stringer("targetRelPath", targetRelPath),
 		slog.Any("targetEntryState", targetEntryState),
@@ -1133,49 +1154,39 @@ func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
 	switch {
 	case c.force:
 		return nil
-	case decision.IsRegularFile && !decision.NeedReportDrift:
-		return nil
-	case !decision.IsRegularFile && targetEntryState != nil && targetEntryState.Equivalent(actualEntryState):
+	case targetEntryState.Equivalent(actualEntryState):
 		return nil
 	}
 
-	if decision.IsRegularFile {
-		if decision.FromTextConvResult.Err != nil {
-			c.errorf("%s: textconv from actual failed: %v\n", targetRelPath, decision.FromTextConvResult.Err)
-		}
-		if decision.ToTextConvResult.Err != nil {
-			c.errorf("%s: textconv to target failed: %v\n", targetRelPath, decision.ToTextConvResult.Err)
-		}
-	}
-
+	// Prepare decision for which kind of prompt we need (if any)
 	type promptMode int
 	const (
-		promptNone promptMode = iota
-		promptYesNoAll
-		promptConflict
+		promptNone     promptMode = iota
+		promptYesNoAll            // yes/no/all/quit (just ask, don't indicate if there is a conflict)
+		promptConflict            // overwrite/all-overwrite/skip/quit (conflict-specific prompt)
 	)
 	mode := promptNone
 
-	targetDirty := lastWrittenEntryState != nil && !decision.Comparison.LastWrittenMatchesActual
-	targetPreExisting := lastWrittenEntryState == nil &&
-		actualEntryState != nil && actualEntryState.Type != chezmoi.EntryStateTypeRemove
+	targetDirty := lastWrittenEntryState != nil && !lastWrittenEntryState.Equivalent(actualEntryState)
+	targetPreExisting := lastWrittenEntryState == nil && actualEntryState.Type != chezmoi.EntryStateTypeRemove
 
+	// Select prompt mode based on command line flag
 	switch {
-	case c.Interactive:
+	case c.Interactive: // Prompt no matter what
 		mode = promptYesNoAll
-	case c.LessInteractive:
+	case c.LessInteractive: // Prompt if target is dirty or pre-existing (i.e., only overwrite what chezmoi has written)
 		if targetDirty || targetPreExisting {
 			mode = promptConflict
 		}
-	default:
+	default: // Prompt in *some* cases of a dirty target:
 		switch {
-		case targetEntryState != nil && targetEntryState.Overwrite():
+		case targetEntryState.Overwrite():
 			mode = promptNone
-		case targetEntryState != nil && targetEntryState.Type == chezmoi.EntryStateTypeScript:
+		case targetEntryState.Type == chezmoi.EntryStateTypeScript:
 			mode = promptNone
 		case lastWrittenEntryState == nil:
 			mode = promptNone
-		case decision.Comparison.LastWrittenMatchesActual:
+		case lastWrittenEntryState.Equivalent(actualEntryState):
 			mode = promptNone
 		case targetDirty:
 			mode = promptConflict
@@ -1186,16 +1197,9 @@ func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
 		return nil
 	}
 
-	var actualContents, targetContents []byte
-	var actualMode, targetMode fs.FileMode
-	if actualEntryState != nil {
-		actualContents = actualEntryState.Contents()
-		actualMode = actualEntryState.Mode
-	}
-	if targetEntryState != nil {
-		targetContents = targetEntryState.Contents()
-		targetMode = targetEntryState.Mode
-	}
+	// Now prompt based on choice made above
+	actualContents := actualEntryState.Contents()
+	targetContents := targetEntryState.Contents()
 	var choices []string
 	if actualContents != nil || targetContents != nil {
 		choices = append(choices, "diff")
@@ -1220,8 +1224,8 @@ func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
 		case choice == "diff":
 			if err := c.diffFile(
 				targetRelPath,
-				c.DestDirAbsPath.Join(targetRelPath), actualContents, actualMode,
-				chezmoi.EmptyAbsPath, targetContents, targetMode,
+				c.DestDirAbsPath.Join(targetRelPath), actualContents, actualEntryState.Mode,
+				chezmoi.EmptyAbsPath, targetContents, targetEntryState.Mode,
 			); err != nil {
 				return err
 			}
@@ -1230,6 +1234,8 @@ func (c *Config) defaultPreApplyFunc(decision chezmoi.StateDecision) error {
 		case choice == "no":
 			return fs.SkipDir
 		case choice == "all":
+			// Delicate difference to all-overwrite (mainly for backwards compatibility): Disabling --interactive means
+			// we still prompt for dirty files, whereas all-overwrite adds --force to really prompt no more.
 			c.Interactive = false
 			return nil
 		case choice == "overwrite":
@@ -1754,6 +1760,7 @@ func (c *Config) getTemplateDataMap(cmd *cobra.Command) map[string]any {
 			"osRelease":         templateData.osRelease,
 			"pathListSeparator": templateData.pathListSeparator,
 			"pathSeparator":     templateData.pathSeparator,
+			"profile":           templateData.profile,
 			"rawHomeDir":        templateData.rawHomeDir,
 			"sourceDir":         templateData.sourceDir,
 			"uid":               templateData.uid,
@@ -1944,6 +1951,7 @@ func (c *Config) newRootCmd() (*cobra.Command, error) {
 	persistentFlags.VarP(&c.customConfigFileAbsPath, "config", "c", "Set config file")
 	persistentFlags.Var(c.configFormat, "config-format", "Set config file format")
 	persistentFlags.BoolVar(&c.debug, "debug", c.debug, "Include debug information in output")
+	persistentFlags.StringVar(&c.currentProfile, "profile", c.currentProfile, "Select configuration profile")
 	persistentFlags.BoolVarP(&c.dryRun, "dry-run", "n", c.dryRun, "Do not make any modifications to the destination directory")
 	persistentFlags.BoolVar(&c.force, "force", c.force, "Make all changes without prompting")
 	persistentFlags.BoolVarP(&c.keepGoing, "keep-going", "k", c.keepGoing, "Keep going as far as possible after an error")
@@ -1970,6 +1978,7 @@ func (c *Config) newRootCmd() (*cobra.Command, error) {
 		rootCmd.RegisterFlagCompletionFunc("refresh-externals", chezmoi.RefreshExternalsFlagCompletionFunc),
 		rootCmd.RegisterFlagCompletionFunc("use-builtin-age", autoBoolFlagCompletionFunc),
 		rootCmd.RegisterFlagCompletionFunc("use-builtin-git", autoBoolFlagCompletionFunc),
+		rootCmd.RegisterFlagCompletionFunc("profile", c.profileFlagCompletionFunc),
 		rootCmd.MarkPersistentFlagDirname("working-tree"),
 	); err != nil {
 		return nil, err
@@ -2309,6 +2318,10 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 		}
 	}
 
+	if err := c.applyProfile(); err != nil {
+		return err
+	}
+
 	// Restore flags that were set on the command line.
 	for value, original := range changedFlags {
 		if err := value.Set(original); err != nil {
@@ -2549,6 +2562,9 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 	} {
 		os.Setenv("CHEZMOI_"+key, value)
 	}
+	if templateData.profile != "" {
+		os.Setenv("CHEZMOI_PROFILE", templateData.profile)
+	}
 	if c.Verbose {
 		os.Setenv("CHEZMOI_VERBOSE", "1")
 	}
@@ -2713,6 +2729,7 @@ func (c *Config) newTemplateData(cmd *cobra.Command) *templateData {
 		osRelease:         osRelease,
 		pathListSeparator: string(os.PathListSeparator),
 		pathSeparator:     string(os.PathSeparator),
+		profile:           c.getSelectedProfile(),
 		rawHomeDir:        rawHomeDir,
 		sourceDir:         sourceDirAbsPath.String(),
 		uid:               uid,
@@ -2736,6 +2753,127 @@ func (c *Config) readConfig(configFileAbsPath chezmoi.AbsPath) error {
 	default:
 		return err
 	}
+}
+
+func (c *Config) applyProfile() error {
+	profileName := c.getSelectedProfile()
+	if profileName == "" {
+		return nil
+	}
+
+	profile, ok := c.Profiles[profileName]
+	if !ok {
+		return fmt.Errorf("profile %q not found", profileName)
+	}
+
+	c.currentProfile = profileName
+	c.profile = &profile
+
+	c.resetSourceState()
+	c.templateData = nil
+
+	if !profile.SourceDirAbsPath.IsEmpty() {
+		c.SourceDirAbsPath = profile.SourceDirAbsPath
+	}
+
+	if len(profile.Data) > 0 {
+		chezmoi.RecursiveMerge(c.Data, profile.Data)
+	}
+
+	if profile.RefreshExternals != chezmoi.RefreshExternalsAuto {
+		c.refreshExternals = profile.RefreshExternals
+	}
+
+	if profile.Apply.Exclude != nil && profile.Apply.Exclude.Bits() != chezmoi.EntryTypesNone {
+		c.Apply.Exclude = profile.Apply.Exclude
+	}
+	if profile.Apply.Include != nil && profile.Apply.Include.Bits() != chezmoi.EntryTypesNone {
+		c.Apply.Include = profile.Apply.Include
+	}
+	if profile.Apply.Init {
+		c.Apply.Init = profile.Apply.Init
+	}
+
+	if profile.ScriptCondition != "" {
+		c.setScriptCondition(profile.ScriptCondition)
+	}
+
+	if profile.Include != nil && profile.Include.Bits() != chezmoi.EntryTypesNone {
+		c.apply.filter.Include = profile.Include
+	}
+	if profile.Exclude != nil && profile.Exclude.Bits() != chezmoi.EntryTypesNone {
+		c.apply.filter.Exclude = profile.Exclude
+	}
+
+	if len(profile.Env) > 0 {
+		if c.Env == nil {
+			c.Env = make(map[string]string)
+		}
+		for k, v := range profile.Env {
+			c.Env[k] = v
+		}
+	}
+
+	if len(profile.ScriptEnv) > 0 {
+		if c.ScriptEnv == nil {
+			c.ScriptEnv = make(map[string]string)
+		}
+		for k, v := range profile.ScriptEnv {
+			c.ScriptEnv[k] = v
+		}
+	}
+
+	if profile.Mode != "" {
+		c.Mode = profile.Mode
+	}
+
+	if len(profile.Template.Options) > 0 {
+		c.Template.Options = profile.Template.Options
+	}
+
+	if len(profile.Interpreters) > 0 {
+		for k, v := range profile.Interpreters {
+			c.Interpreters[k] = v
+		}
+	}
+
+	if profile.Umask != 0 {
+		c.Umask = profile.Umask
+	}
+
+	return nil
+}
+
+func (c *Config) getSelectedProfile() string {
+	if c.currentProfile != "" {
+		return c.currentProfile
+	}
+	if envProfile := os.Getenv("CHEZMOI_PROFILE"); envProfile != "" {
+		return envProfile
+	}
+	return c.CurrentProfile
+}
+
+func (c *Config) profileFlagCompletionFunc(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	profileNames := make([]string, 0, len(c.Profiles))
+	for name := range c.Profiles {
+		if strings.HasPrefix(name, toComplete) {
+			profileNames = append(profileNames, name)
+		}
+	}
+	slices.Sort(profileNames)
+	return profileNames, cobra.ShellCompDirectiveNoFileComp
+}
+
+func (c *Config) setScriptCondition(condition chezmoi.ScriptCondition) {
+	includeBits := chezmoi.EntryTypeScripts
+	switch condition {
+	case chezmoi.ScriptConditionAlways:
+		includeBits |= chezmoi.EntryTypeAlways
+	case chezmoi.ScriptConditionOnce:
+	case chezmoi.ScriptConditionOnChange:
+	}
+	c.apply.filter.Include = chezmoi.NewEntryTypeSet(includeBits)
 }
 
 // resetSourceState clears the cached source state, if any.
@@ -3185,10 +3323,16 @@ func newConfigFile(bds *xdg.BaseDirectorySpecification) ConfigFile {
 		Color: autoBool{
 			auto: true,
 		},
-		Data:         make(map[string]any),
-		Interpreters: DefaultInterpreters,
-		Mode:         chezmoi.ModeFile,
-		Pager:        os.Getenv("PAGER"),
+		Apply: applyConfigFileConfig{
+			Exclude: chezmoi.NewEntryTypeSet(chezmoi.EntryTypesNone),
+			Include: chezmoi.NewEntryTypeSet(chezmoi.EntryTypesAll),
+		},
+		CurrentProfile: "",
+		Data:           make(map[string]any),
+		Interpreters:   DefaultInterpreters,
+		Mode:           chezmoi.ModeFile,
+		Pager:          os.Getenv("PAGER"),
+		Profiles:       make(map[string]profileConfig),
 		Progress: autoBool{
 			auto: true,
 		},
