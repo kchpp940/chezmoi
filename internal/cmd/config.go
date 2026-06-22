@@ -1267,37 +1267,9 @@ func (c *Config) destAbsPathInfos(
 	destAbsPathInfos := make(map[chezmoi.AbsPath]fs.FileInfo)
 	for _, arg := range args {
 		arg = filepath.Clean(arg)
-		var destAbsPath chezmoi.AbsPath
-		if c.sourcePath {
-			sourceAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
-			if err != nil {
-				return nil, err
-			}
-			sourceRelPathStr, err := sourceAbsPath.TrimDirPrefix(c.SourceDirAbsPath)
-			if err != nil {
-				return nil, err
-			}
-			sourceFileInfo, err := c.sourceSystem.Lstat(sourceAbsPath)
-			if err != nil {
-				return nil, err
-			}
-			var sourceRelPath chezmoi.SourceRelPath
-			if sourceFileInfo.IsDir() {
-				sourceRelPath = chezmoi.NewSourceRelDirPath(sourceRelPathStr.String())
-			} else {
-				sourceRelPath = chezmoi.NewSourceRelPath(sourceRelPathStr.String())
-			}
-			targetRelPath, err := sourceRelPath.TargetRelPath(c.encryption.EncryptedSuffix())
-			if err != nil {
-				return nil, err
-			}
-			destAbsPath = c.DestDirAbsPath.Join(targetRelPath)
-		} else {
-			var err error
-			destAbsPath, err = chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
-			if err != nil {
-				return nil, err
-			}
+		destAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
+		if err != nil {
+			return nil, err
 		}
 		targetRelPath, err := c.targetRelPath(destAbsPath)
 		if err != nil {
@@ -2975,19 +2947,6 @@ func (c *Config) targetRelPaths(
 	args []string,
 	options targetRelPathsOptions,
 ) ([]chezmoi.RelPath, error) {
-	if c.sourcePath {
-		return c.targetRelPathsBySourcePath(sourceState, args, options)
-	}
-	return c.targetRelPathsByTargetPath(sourceState, args, options)
-}
-
-// targetRelPathsByTargetPath returns the target relative paths for each target
-// path in args. The returned paths are sorted and de-duplicated.
-func (c *Config) targetRelPathsByTargetPath(
-	sourceState *chezmoi.SourceState,
-	args []string,
-	options targetRelPathsOptions,
-) ([]chezmoi.RelPath, error) {
 	targetRelPaths := make([]chezmoi.RelPath, 0, len(args))
 	for _, arg := range args {
 		argAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
@@ -3048,18 +3007,7 @@ func (c *Config) targetRelPathsByTargetPath(
 // targetRelPathsBySourcePath returns the target relative paths for each arg in
 // args.
 func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, args []string, options targetRelPathsOptions) ([]chezmoi.RelPath, error) {
-	targetRelPathsBySourceRelPath := make(map[chezmoi.RelPath]chezmoi.RelPath)
-	sourceStateEntriesBySourceRelPath := make(map[chezmoi.RelPath]chezmoi.SourceStateEntry)
-	_ = sourceState.ForEach(
-		func(targetRelPath chezmoi.RelPath, sourceStateEntry chezmoi.SourceStateEntry) error {
-			sourceRelPath := sourceStateEntry.SourceRelPath().RelPath()
-			targetRelPathsBySourceRelPath[sourceRelPath] = targetRelPath
-			sourceStateEntriesBySourceRelPath[sourceRelPath] = sourceStateEntry
-			return nil
-		},
-	)
-
-	var targetRelPaths []chezmoi.RelPath
+	sourceRelPaths := make([]chezmoi.RelPath, 0, len(args))
 	for _, arg := range args {
 		argAbsPath, err := chezmoi.NewAbsPathFromExtPath(arg, c.homeDirAbsPath)
 		if err != nil {
@@ -3069,57 +3017,15 @@ func (c *Config) targetRelPathsBySourcePath(sourceState *chezmoi.SourceState, ar
 		if err != nil {
 			return nil, err
 		}
-
-		found := false
-		if sourceStateEntry, ok := sourceStateEntriesBySourceRelPath[sourceRelPath]; ok {
-			if options.mustBeInSourceState {
-				if _, ok := sourceStateEntry.(*chezmoi.SourceStateRemove); ok {
-					return nil, fmt.Errorf("%s: not in source state", arg)
-				}
-			}
-			if options.mustNotBeExternal {
-				targetStateEntry, err := sourceStateEntry.TargetStateEntry(c.destSystem, c.DestDirAbsPath.Join(targetRelPathsBySourceRelPath[sourceRelPath]))
-				if err != nil {
-					return nil, err
-				}
-				if targetStateEntry.SourceAttr().External {
-					return nil, fmt.Errorf("%s: is an external", arg)
-				}
-			}
-			targetRelPaths = append(targetRelPaths, targetRelPathsBySourceRelPath[sourceRelPath])
-			found = true
-		}
-
-		if options.recursive {
-			for srp, trp := range targetRelPathsBySourceRelPath {
-				if srp == sourceRelPath {
-					continue
-				}
-				if srp.HasDirPrefix(sourceRelPath) {
-					targetRelPaths = append(targetRelPaths, trp)
-					found = true
-				}
-			}
-		}
-
-		if !found {
-			return nil, fmt.Errorf("%s: not in source state", arg)
-		}
+		sourceRelPaths = append(sourceRelPaths, sourceRelPath)
 	}
-
-	if len(targetRelPaths) == 0 {
-		return nil, nil
-	}
-
-	slices.SortFunc(targetRelPaths, chezmoi.CompareRelPaths)
-	n := 1
-	for i := 1; i < len(targetRelPaths); i++ {
-		if targetRelPaths[i] != targetRelPaths[i-1] {
-			targetRelPaths[n] = targetRelPaths[i]
-			n++
-		}
-	}
-	return targetRelPaths[:n], nil
+	return sourceState.TargetRelPathsForSourcePaths(sourceRelPaths, chezmoi.TargetRelPathsForSourcePathsOptions{
+		MustBeInSourceState: options.mustBeInSourceState,
+		MustNotBeExternal:   options.mustNotBeExternal,
+		Recursive:           options.recursive,
+		DestSystem:          c.destSystem,
+		DestDirAbsPath:      c.DestDirAbsPath,
+	})
 }
 
 // targetValidArgs returns target completions for toComplete given args.

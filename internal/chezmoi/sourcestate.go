@@ -857,6 +857,16 @@ func (s *SourceState) Encryption() Encryption {
 	return s.encryption
 }
 
+// SourceDir returns s's source directory.
+func (s *SourceState) SourceDir() AbsPath {
+	return s.sourceDirAbsPath
+}
+
+// DestDir returns s's destination directory.
+func (s *SourceState) DestDir() AbsPath {
+	return s.destDirAbsPath
+}
+
 // ExecuteTemplateDataOptions are options to SourceState.ExecuteTemplateData.
 type ExecuteTemplateDataOptions struct {
 	NameRelPath     RelPath
@@ -1393,6 +1403,84 @@ func (s *SourceState) TargetRelPaths() []RelPath {
 		return CompareRelPaths(a, b)
 	})
 	return targetRelPaths
+}
+
+// TargetRelPathsForSourcePathsOptions are options for SourceState.TargetRelPathsForSourcePaths.
+type TargetRelPathsForSourcePathsOptions struct {
+	MustBeInSourceState bool
+	MustNotBeExternal   bool
+	Recursive           bool
+	DestSystem          System
+	DestDirAbsPath      AbsPath
+}
+
+// TargetRelPathsForSourcePaths returns the target relative paths for the given
+// source relative paths. It supports matching directories, recursing into
+// subdirectories, and de-duplicating and sorting the result.
+func (s *SourceState) TargetRelPathsForSourcePaths(sourceRelPaths []RelPath, options TargetRelPathsForSourcePathsOptions) ([]RelPath, error) {
+	targetRelPathsBySourceRelPath := make(map[RelPath]RelPath)
+	sourceStateEntriesBySourceRelPath := make(map[RelPath]SourceStateEntry)
+	_ = s.ForEach(
+		func(targetRelPath RelPath, sourceStateEntry SourceStateEntry) error {
+			sourceRelPath := sourceStateEntry.SourceRelPath().RelPath()
+			targetRelPathsBySourceRelPath[sourceRelPath] = targetRelPath
+			sourceStateEntriesBySourceRelPath[sourceRelPath] = sourceStateEntry
+			return nil
+		},
+	)
+
+	var targetRelPaths []RelPath
+	for _, sourceRelPath := range sourceRelPaths {
+		found := false
+		if sourceStateEntry, ok := sourceStateEntriesBySourceRelPath[sourceRelPath]; ok {
+			if options.MustBeInSourceState {
+				if _, ok := sourceStateEntry.(*SourceStateRemove); ok {
+					return nil, fmt.Errorf("%s: not in source state", sourceRelPath)
+				}
+			}
+			if options.MustNotBeExternal {
+				targetStateEntry, err := sourceStateEntry.TargetStateEntry(options.DestSystem, options.DestDirAbsPath.Join(targetRelPathsBySourceRelPath[sourceRelPath]))
+				if err != nil {
+					return nil, err
+				}
+				if targetStateEntry.SourceAttr().External {
+					return nil, fmt.Errorf("%s: is an external", sourceRelPath)
+				}
+			}
+			targetRelPaths = append(targetRelPaths, targetRelPathsBySourceRelPath[sourceRelPath])
+			found = true
+		}
+
+		if options.Recursive {
+			for srp, trp := range targetRelPathsBySourceRelPath {
+				if srp == sourceRelPath {
+					continue
+				}
+				if srp.HasDirPrefix(sourceRelPath) {
+					targetRelPaths = append(targetRelPaths, trp)
+					found = true
+				}
+			}
+		}
+
+		if !found {
+			return nil, fmt.Errorf("%s: not in source state", sourceRelPath)
+		}
+	}
+
+	if len(targetRelPaths) == 0 {
+		return nil, nil
+	}
+
+	slices.SortFunc(targetRelPaths, CompareRelPaths)
+	n := 1
+	for i := 1; i < len(targetRelPaths); i++ {
+		if targetRelPaths[i] != targetRelPaths[i-1] {
+			targetRelPaths[n] = targetRelPaths[i]
+			n++
+		}
+	}
+	return targetRelPaths[:n], nil
 }
 
 // TemplateData returns a copy of s's template data.

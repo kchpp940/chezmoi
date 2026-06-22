@@ -109,3 +109,47 @@ func (p SourceRelPath) TargetRelPath(encryptedSuffix string) (RelPath, error) {
 	}
 	return NewRelPath(path.Join(relPathStrs...)), nil
 }
+
+// NewSourceRelPathFromAbsPath returns a new SourceRelPath from an absolute
+// path within sourceDirAbsPath, checking that it is actually within the source
+// directory and does not escape via parent directory traversal.
+func NewSourceRelPathFromAbsPath(
+	system System,
+	sourceDirAbsPath AbsPath,
+	sourceAbsPath AbsPath,
+) (SourceRelPath, error) {
+	sourceRelPathStr, err := sourceAbsPath.TrimDirPrefix(sourceDirAbsPath)
+	if err != nil {
+		return SourceRelPath{}, err
+	}
+	if strings.HasPrefix(sourceRelPathStr.String(), "..") {
+		return SourceRelPath{}, &NotInAbsDirError{
+			pathAbsPath: sourceAbsPath,
+			dirAbsPath:  sourceDirAbsPath,
+		}
+	}
+	fileInfo, err := system.Lstat(sourceAbsPath)
+	if err != nil {
+		return SourceRelPath{}, err
+	}
+	if fileInfo.IsDir() {
+		return NewSourceRelDirPath(sourceRelPathStr.String()), nil
+	}
+	return NewSourceRelPath(sourceRelPathStr.String()), nil
+}
+
+// SourceAbsPathToTargetRelPath converts a source absolute path to a target
+// relative path, using the given source directory, encryption suffix, and
+// system for file type detection.
+func SourceAbsPathToTargetRelPath(
+	system System,
+	sourceDirAbsPath AbsPath,
+	sourceAbsPath AbsPath,
+	encryptedSuffix string,
+) (RelPath, error) {
+	sourceRelPath, err := NewSourceRelPathFromAbsPath(system, sourceDirAbsPath, sourceAbsPath)
+	if err != nil {
+		return RelPath{}, err
+	}
+	return sourceRelPath.TargetRelPath(encryptedSuffix)
+}
