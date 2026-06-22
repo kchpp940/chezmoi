@@ -260,6 +260,7 @@ type Config struct {
 	ageRecipientFile string
 	configFormat     *choiceFlag
 	currentProfile   string
+	profileSource    profileSource
 	debug            bool
 	dryRun           bool
 	force            bool
@@ -286,6 +287,7 @@ type Config struct {
 	chattr          chattrCmdConfig
 	data            dataCmdConfig
 	destroy         destroyCmdConfig
+	profileCmd      profileCmdConfig
 	doctor          doctorCmdConfig
 	dump            dumpCmdConfig
 	dumpConfig      dumpConfigCmdConfig
@@ -461,6 +463,9 @@ func newConfig(options ...configOption) (*Config, error) {
 			recursive: true,
 		},
 		data: dataCmdConfig{
+			format: newChoiceFlag("", writeDataFormatValues),
+		},
+		profileCmd: profileCmdConfig{
 			format: newChoiceFlag("", writeDataFormatValues),
 		},
 		dump: dumpCmdConfig{
@@ -2054,6 +2059,7 @@ func (c *Config) newRootCmd() (*cobra.Command, error) {
 		c.newMackupCmd(),
 		c.newManagedCmd(),
 		c.newMergeCmd(),
+		c.newProfileCmd(),
 		c.newMergeAllCmd(),
 		c.newPurgeCmd(),
 		c.newReAddCmd(),
@@ -2590,6 +2596,11 @@ func (c *Config) persistentPreRunRootE(cmd *cobra.Command, args []string) error 
 			return err
 		}
 	}
+
+	// Record the original profile selection source before any environment
+	// variables (including CHEZMOI_PROFILE) are set below, which would
+	// otherwise interfere with source detection.
+	c.profileSource = c.computeProfileSource(cmd)
 
 	templateData := c.getTemplateData(cmd)
 	os.Setenv("CHEZMOI", "1")

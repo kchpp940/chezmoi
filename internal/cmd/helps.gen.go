@@ -677,6 +677,56 @@ var helps = map[string]*help{
 		longHelp: "" +
 			"  podman is an alias for docker.",
 	},
+	"profile": {
+		longHelp: "" +
+			"  Show the currently active profile, its source, the effective configuration\n" +
+			"  summary, profile overrides, and a list of all available profiles.\n" +
+			"\n" +
+			"  This command helps you confirm which profile is in effect before running\n" +
+			"  init or apply, preventing accidental contamination across different machine\n" +
+			"  environments (e.g., dev workstation, GPU training machine, CI runner, WSL,\n" +
+			"  or remote inference nodes).",
+		example: "" +
+			"  # Show the active profile and effective configuration in human-readable form\n" +
+			"  chezmoi profile\n" +
+			"\n" +
+			"  # Show the same information as JSON (useful for scripting)\n" +
+			"  chezmoi profile --format=json\n" +
+			"\n" +
+			"  # List all available profiles\n" +
+			"  chezmoi profile list\n" +
+			"\n" +
+			"  # Confirm the profile before applying\n" +
+			"  chezmoi profile && chezmoi apply --dry-run\n" +
+			"\n" +
+			"  # Switch profile on the command line and verify\n" +
+			"  chezmoi --profile=gpu profile",
+		longFlags: chezmoiset.New(
+			"format",
+		),
+		shortFlags: chezmoiset.New(
+			"f",
+		),
+	},
+	"profile-list": {
+		longHelp: "" +
+			"  List all profiles declared in the configuration file, marking the active\n" +
+			"  one.\n" +
+			"\n" +
+			"  Note: this command is invoked as chezmoi profile list.",
+		example: "" +
+			"  # List all available profiles\n" +
+			"  chezmoi profile list\n" +
+			"\n" +
+			"  # List profiles as JSON\n" +
+			"  chezmoi profile list --format=json",
+		longFlags: chezmoiset.New(
+			"format",
+		),
+		shortFlags: chezmoiset.New(
+			"f",
+		),
+	},
 	"purge": {
 		longHelp: "" +
 			"  Remove chezmoi's configuration, state, and source directory, but leave the\n" +
